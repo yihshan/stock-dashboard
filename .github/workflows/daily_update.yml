@@ -21,7 +21,7 @@ jobs:
         run: pip install requests pandas
 
       - name: Run Downloader
-        run: python download_tw_close_prices.py --output-dir ./data
+        run: python download_tw_close_prices.py
         env:
           # 在 GitHub Secrets 設定您的變數
           DATA_DIR: "./data" 

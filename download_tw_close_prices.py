@@ -20,11 +20,17 @@ import ssl
 import sys
 import time
 import traceback
+import os
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+# 改為直接從環境變數讀取，若沒有則使用預設路徑 (適用於您本地電腦)
+DATA_DIR = os.getenv("OUTPUT_DIR", r"C:\Users\yihsh\OneDrive - FBTW\每日收盤")
+SAVE_DIR = Path(DATA_DIR)
+SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
 # 強制系統標準輸出使用 UTF-8，解決 Windows CMD 亂碼問題
 if sys.stdout.encoding != 'utf-8':

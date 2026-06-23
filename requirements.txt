@@ -3,3 +3,4 @@ pandas
 streamlit
 plotly
 urllib3
+openpyxl

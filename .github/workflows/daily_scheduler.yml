@@ -2,8 +2,8 @@ name: 每日台股收盤下載與監控
 
 on:
   schedule:
-    # UTC 06:30 = 台灣時間 14:30，週一到週五執行
-    - cron: '30 6 * * 1-5'
+    # UTC 06:30 = 台灣時間 14:15，週一到週五執行
+    - cron: '15 6 * * 1-5'
   workflow_dispatch: # 允許在 GitHub 網頁上手動測試執行
 
 jobs:

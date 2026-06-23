@@ -1,0 +1,44 @@
+name: 每日台股收盤下載與監控
+
+on:
+  schedule:
+    # UTC 06:30 = 台灣時間 14:30，週一到週五執行
+    - cron: '30 6 * * 1-5'
+  workflow_dispatch: # 允許在 GitHub 網頁上手動測試執行
+
+jobs:
+  run-daily-tasks:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+
+    - name: 執行下載與監控腳本
+      env:
+        # 將 GitHub Secrets 注入為環境變數
+        EMAIL_USER: ${{ secrets.EMAIL_USER }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: |
+        # 指定將資料下載到專案的 data 資料夾中
+        python download_tw_close_prices.py --output-dir "data"
+        python monitor_stocks.py
+
+    - name: 將新資料 Commit 並 Push 回儲存庫
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add data/
+        git commit -m "Auto-update daily close prices [skip ci]" || echo "No changes to commit"
+        git push origin main

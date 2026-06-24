@@ -23,10 +23,10 @@ except ImportError:
     st.error("❌ 找不到 config.py，請確保設定檔存在。")
     st.stop()
 
-# 設定頁面
+# 設定頁面 (全域只能呼叫一次)
 st.set_page_config(page_title="台股投資分析報告 v3.9.1", layout="wide")
 
-# --- 1. 動態個股新聞分析模組 (名稱固定為 fetch_portfolio_news) ---
+# --- 1. 動態個股新聞分析模組 ---
 @st.cache_data(ttl=3600)
 def fetch_portfolio_news(api_key, stock_names):
     if not api_key or not stock_names: return None
@@ -54,45 +54,11 @@ def fetch_portfolio_news(api_key, stock_names):
     except Exception: pass
     return None
 
-# --- 2. 初始化庫存 (確保變數存在) ---
+# --- 2. 初始化庫存 ---
 INVENTORY_FILE = Path(config.DATA_DIR) / "庫存股票.xlsx"
 inventory_df = pd.read_excel(INVENTORY_FILE) if os.path.exists(INVENTORY_FILE) else None
 
-# --- 3. UI 設定 ---
-st.markdown("<style>.news-box { padding: 15px; border-radius: 8px; background-color: #f8f9fa; border: 1px solid #dee2e6; margin-bottom: 15px; } .news-title { font-weight: bold; color: #004a99; }</style>", unsafe_allow_html=True)
-#st.title("📊 投資組合財務分析報告 v3.9.1")
-
-# --- 4. 新聞區塊 (已修正呼叫名稱為 fetch_portfolio_news) ---
-st.markdown("### 🔔 持倉個股重大消息監控")
-if inventory_df is not None and '股票名稱' in inventory_df.columns:
-    portfolio_stocks = inventory_df['股票名稱'].unique().tolist()
-    api_key = getattr(config, 'GEMINI_API_KEY', None)
-
-    with st.spinner("🔍 正在分析您的持倉新聞..."):
-        # ✅ 正確呼叫修正後的函式名稱
-        dynamic_news = fetch_portfolio_news(api_key, portfolio_stocks)
-    
-    news_col1, news_col2 = st.columns(2)
-    if dynamic_news:
-        mid = len(dynamic_news) // 2
-        with news_col1:
-            for item in dynamic_news[:mid]:
-                st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title')}</div><div class="news-content">{item.get('content')}</div></div>''', unsafe_allow_html=True)
-        with news_col2:
-            for item in dynamic_news[mid:]:
-                st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title')}</div><div class="news-content">{item.get('content')}</div></div>''', unsafe_allow_html=True)
-    else:
-        st.info("⚠️ 目前無重大持倉相關消息，或 AI 伺服器繁忙。")
-else:
-    st.warning("⚠️ 無法讀取庫存或 Excel 中缺少「股票名稱」欄位。")
-
-# --- 其餘程式邏輯請接續在此 ---
-# --- 後續您原有的圖表與明細表邏輯請接續在此 ---
-# (以下接您原本繪製圖表與明細表的程式碼...)
-# 設定頁面與專業風格
-st.set_page_config(page_title="台股投資分析報告 v3.9.1", layout="wide")
-
-# 移除強制白色背景，改用更相容的主題風格，並加入數字靠右對齊與 KPI 顏色樣式
+# --- 3. UI 樣式設定 ---
 st.markdown("""
     <style>
     h1, h2, h3 { color: #1a365d; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
@@ -108,17 +74,17 @@ st.markdown("""
         background-color: #f1f3f5;
         color: #1a365d;
         font-weight: bold;
-        text-align: center !important; /* 欄位名稱置中 */
+        text-align: center !important;
         padding: 12px;
         border: 1px solid #dee2e6;
     }
     .report-table td {
         padding: 10px;
         border: 1px solid #dee2e6;
-        text-align: right; /* 預設數據靠右 */
+        text-align: right;
     }
     .report-table td:first-child {
-        text-align: center; /* 股票名稱置中 */
+        text-align: center;
     }
     
     /* 負數紅字樣式 */
@@ -149,9 +115,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 定義資料路徑：從 config.py 讀取統一路徑
+# 定義資料路徑
 BASE_DIR = Path(config.DATA_DIR)
-INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 
 # 財務參數
@@ -160,41 +125,19 @@ TAX_RATE = 0.003
 MIN_FEE = 20
 
 def format_finance(val, is_percent=False):
-    """專業財務格式：負數用括號紅字，不含負號"""
     if val is None: return ""
     suffix = "%" if is_percent else ""
     abs_val = abs(val)
-    
-    if is_percent:
-        val_str = f"{abs_val:,.2f}{suffix}"
-    else:
-        val_str = f"{abs_val:,.0f}{suffix}"
-        
-    if val < 0:
-        return f'<span class="neg-value">({val_str})</span>'
-    else:
-        return val_str
+    val_str = f"{abs_val:,.2f}{suffix}" if is_percent else f"{abs_val:,.0f}{suffix}"
+    return f'<span class="neg-value">({val_str})</span>' if val < 0 else val_str
 
 def format_finance_plain(val, is_percent=False):
-    """將數值格式化：負數以紅色括號顯示，正數正常顯示"""
     try:
         val = float(val)
-        if is_percent:
-            # 百分比格式
-            formatted = f"{val:.2f}%"
-        else:
-            # 金額格式
-            formatted = f"{val:,.0f}"
-            
-        # 若為負數，回傳紅色括號格式的 HTML
+        formatted = f"{val:.2f}%" if is_percent else f"{val:,.0f}"
         if val < 0:
-            # 移除負號並加上括號，同時設定顏色為紅色
             abs_val = abs(val)
-            if is_percent:
-                return f'<span style="color:red">({abs_val:.2f}%)</span>'
-            else:
-                return f'<span style="color:red">({abs_val:,.0f})</span>'
-        
+            return f'<span style="color:red">({abs_val:.2f}%)</span>' if is_percent else f'<span style="color:red">({abs_val:,.0f})</span>'
         return formatted
     except:
         return str(val)
@@ -274,14 +217,10 @@ def load_data():
             target_cols = {'股票名稱': None, '收盤價': None}
             for col in df.columns:
                 c_clean = str(col).strip()
-                
-                # 擴充辨識中英文名稱與代號
                 if any(x in c_clean for x in ['名稱', '證券名稱', '股票名稱', 'Name']):
                     target_cols['股票名稱'] = col
                 elif any(x in c_clean for x in ['證券代號', '代號', '股票代號', 'Code']) and not target_cols['股票名稱']:
                     target_cols['股票名稱'] = col
-                    
-                # 擴充辨識中英文收盤價
                 if any(x in c_clean for x in ['收盤', '收盤價', 'ClosingPrice', 'Close']):
                     target_cols['收盤價'] = col
             
@@ -299,41 +238,38 @@ def load_data():
 
 inventory_df, close_df, logs = load_data()
 
-#st.title("📊 投資組合財務分析報告 v3.9.1")
-
-# --- 盤前重大消息區塊 (動態即時連線版) ---
+# --- 盤前重大消息區塊 ---
 st.markdown("### 🔔 今日盤前重大消息 (Gemini AI 即時分析)")
-api_key = os.getenv("GEMINI_API_KEY") or getattr(config, 'GEMINI_API_KEY', None)
-with st.spinner("🔄 正在取得並分析最新市場新聞..."):
-    dynamic_news = fetch_portfolio_news(api_key, portfolio_stocks)
+if inventory_df is not None and '股票名稱' in inventory_df.columns:
+    portfolio_stocks = inventory_df['股票名稱'].unique().tolist()
+    api_key = os.getenv("GEMINI_API_KEY") or getattr(config, 'GEMINI_API_KEY', None)
+    
+    with st.spinner("🔄 正在取得並分析最新市場新聞..."):
+        dynamic_news = fetch_portfolio_news(api_key, portfolio_stocks)
 
-news_col1, news_col2 = st.columns(2)
-if dynamic_news and len(dynamic_news) >= 2:
-    mid = len(dynamic_news) // 2
-    with news_col1:
-        for item in dynamic_news[:mid]:
-            st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title', '焦點新聞')}</div><div class="news-content">{item.get('content', '')}</div></div>''', unsafe_allow_html=True)
-    with news_col2:
-        for item in dynamic_news[mid:]:
-            st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title', '焦點新聞')}</div><div class="news-content">{item.get('content', '')}</div></div>''', unsafe_allow_html=True)
+    news_col1, news_col2 = st.columns(2)
+    if dynamic_news and len(dynamic_news) >= 2:
+        mid = len(dynamic_news) // 2
+        with news_col1:
+            for item in dynamic_news[:mid]:
+                st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title', '焦點新聞')}</div><div class="news-content">{item.get('content', '')}</div></div>''', unsafe_allow_html=True)
+        with news_col2:
+            for item in dynamic_news[mid:]:
+                st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title', '焦點新聞')}</div><div class="news-content">{item.get('content', '')}</div></div>''', unsafe_allow_html=True)
+    else:
+        with news_col1:
+            st.info("⚠️ 目前 AI 伺服器繁忙，無法即時分析，請稍後重整。")
+        with news_col2:
+            st.markdown("""
+                <div class="news-box">
+                    <div class="news-title">⚠️ 外部風險觀察</div>
+                    <div class="news-content">
+                        需緊盯 Fed 利率決策動向及美銀示警之市場泡沫訊號。外資期貨空單仍處高位，短線需防範漲多回檔風險。
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
 else:
-    with news_col1:
-        st.info("⚠️ 目前 AI 伺服器繁忙，無法即時分析，請稍後重整。")
-with news_col2:
-    st.markdown("""
-        <div class="news-box">
-            <div class="news-title">⚠️ 外部風險觀察</div>
-            <div class="news-content">
-                需緊盯 Fed 利率決策動向及美銀示警之市場泡沫訊號。外資期貨空單仍處高位，短線需防範漲多回檔風險。
-            </div>
-        </div>
-        <div class="news-box">
-            <div class="news-title">📅 本週法說會重點</div>
-            <div class="news-content">
-                本週多家權值股將舉行股東會與法說會，關於 2026 下半年展望將直接影響市場情緒。
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
+    st.warning("⚠️ 無法讀取庫存或 Excel 中缺少「股票名稱」欄位。")
 
 st.divider()
 
@@ -348,7 +284,7 @@ if inventory_df is not None and close_df is not None:
         all_stock_names = ["全部個股"] + sorted(inventory_df['股票名稱'].unique().tolist())
         selected_stock = st.selectbox("🔍 個股連動分析：", options=all_stock_names)
 
-    # 計算損益數據
+    # 計算損益數據 (加入收盤價與股數，以便後續直覺計算每日差額)
     daily_details = []
     for d in all_dates:
         if d > selected_date: continue
@@ -362,23 +298,30 @@ if inventory_df is not None and close_df is not None:
             if not m_close.empty:
                 price = m_close.iloc[0]['收盤價']
                 pnl, val, _ = calculate_net_pnl(avg_cost, price, shares)
-                daily_details.append({"日期": d, "股票名稱": name, "淨損益": pnl, "市值": val, "成本": avg_cost * shares})
+                daily_details.append({
+                    "日期": d, "股票名稱": name, "淨損益": pnl, "市值": val, 
+                    "成本": avg_cost * shares, "收盤價": price, "股數": shares
+                })
     
     full_df = pd.DataFrame(daily_details)
     filtered_full_df = full_df if selected_stock == "全部個股" else full_df[full_df['股票名稱'] == selected_stock]
     latest_summary = filtered_full_df[filtered_full_df['日期'] == selected_date]
     
-    # 計算「本日獲利(損)」
+    # 計算「本日獲利(損)」 - 改為直覺算法：(今日收盤價 - 昨日收盤價) * 股數
     daily_pnl = 0
     if len(all_dates) >= 2:
         try:
             idx = all_dates.index(selected_date)
             if idx > 0:
                 prev_date = all_dates[idx-1]
-                current_net_pnl = latest_summary['淨損益'].sum()
                 prev_summary = filtered_full_df[filtered_full_df['日期'] == prev_date]
-                prev_net_pnl = prev_summary['淨損益'].sum()
-                daily_pnl = current_net_pnl - prev_net_pnl
+                for _, row in latest_summary.iterrows():
+                    name = row['股票名稱']
+                    c_price = row['收盤價']
+                    c_shares = row['股數']
+                    prev_row = prev_summary[prev_summary['股票名稱'] == name]
+                    p_price = prev_row.iloc[0]['收盤價'] if not prev_row.empty else c_price
+                    daily_pnl += (c_price - p_price) * c_shares
         except: pass
 
     total_net_pnl = latest_summary['淨損益'].sum() if not latest_summary.empty else 0
@@ -440,7 +383,7 @@ if inventory_df is not None and close_df is not None:
     current_close = close_df[close_df['日期_dt'] == selected_date]
     inventory_to_show = inventory_df if selected_stock == "全部個股" else inventory_df[inventory_df['股票名稱'] == selected_stock]
     
-    # 準備用於計算個股本日獲利(損)的數據
+    # 計算各股的本日獲利(損) - 直覺算法：(今日收盤價 - 昨日收盤價) * 股數
     stock_daily_pnl_map = {}
     if len(all_dates) >= 2:
         try:
@@ -450,11 +393,14 @@ if inventory_df is not None and close_df is not None:
                 prev_details = filtered_full_df[filtered_full_df['日期'] == prev_date]
                 for _, row in latest_summary.iterrows():
                     name = row['股票名稱']
+                    c_price = row['收盤價']
+                    c_shares = row['股數']
                     prev_row = prev_details[prev_details['股票名稱'] == name]
                     if not prev_row.empty:
-                        stock_daily_pnl_map[name] = row['淨損益'] - prev_row.iloc[0]['淨損益']
+                        p_price = prev_row.iloc[0]['收盤價']
+                        stock_daily_pnl_map[name] = (c_price - p_price) * c_shares
                     else:
-                        stock_daily_pnl_map[name] = row['淨損益']
+                        stock_daily_pnl_map[name] = 0
         except: pass
 
     rows_html = ""
@@ -500,9 +446,9 @@ if inventory_df is not None and close_df is not None:
                 {rows_html}
             </tbody>
         </table>
-        <p style="color: #666; font-size: 0.8rem; margin-top: 10px;">註：負數以括號 ( ) 表示。稅費包含買入手續費、賣出手續費及證交稅。</p>
+        <p style="color: #666; font-size: 0.8rem; margin-top: 10px;">註：負數以括號 ( ) 表示。累積淨損益的計算包含扣除買進/賣出手續費及證交稅。</p>
     """, unsafe_allow_html=True)
 else:
-    st.info("👋 歡迎使用！請確認 '每日收盤' 資料夾中已包含 '庫存股票.xlsx' 與當日收盤價 CSV 檔案。")
+    st.info("👋 歡迎使用！請確認 '每日收盤' 或 'data' 資料夾中已包含 '庫存股票.xlsx' 與收盤價 CSV 檔案。")
     if logs:
         for log in logs: st.error(log)

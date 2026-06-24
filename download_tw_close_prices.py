@@ -42,3 +42,21 @@ def download_data():
 
 if __name__ == "__main__":
     download_data()
+# 假設上市資料存在 twse_rows，上櫃資料存在 tpex_rows
+all_rows = twse_rows + tpex_rows  # 將兩份資料合併成一個大清單
+
+# --- 接著執行我們之前加上的「資料瘦身」過濾邏輯 ---
+target_stocks = set()
+# ... 讀取庫存與監控名單的程式碼 ...
+
+if target_stocks:
+    all_rows = [row for row in all_rows if row.get('股票名稱', '').strip() in target_stocks]
+
+# --- 最後，統一存成一個合併的 CSV 檔案 ---
+ad_date = now_taiwan().strftime("%Y-%m-%d")
+output_path = output_dir / f"台股每日收盤價_{ad_date}.csv"
+
+with output_path.open("w", encoding="utf-8-sig", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(all_rows)

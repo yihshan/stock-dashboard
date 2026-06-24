@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 
 # --- 核心路徑處理 ---
 # 如果是在 GitHub Actions 執行，強制存到 ./data；否則用 OneDrive
-DATA_DIR = os.getenv("OUTPUT_DIR", r"C:\Users\yihsh\OneDrive - FBTW\每日收盤")
+DATA_DIR = os.getenv("OUTPUT_DIR", Path(__file__).resolve().parent / "data")
 SAVE_DIR = Path(DATA_DIR)
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
 

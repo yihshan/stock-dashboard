@@ -32,7 +32,7 @@ if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 TAIWAN_TZ = timezone(timedelta(hours=8))
-DEFAULT_OUTPUT_DIR = r"C:\Users\yihsh\OneDrive - FBTW\每日收盤"
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "data"
 
 # 資料來源 (data.gov.tw 推薦之即時 CSV 連結)
 TWSE_CSV_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=open_data"

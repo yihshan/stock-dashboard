@@ -25,7 +25,11 @@ def download_data():
     
     today_str = datetime.now().strftime("%Y-%m-%d")
     print(f"[{today_str}] 開始下載資料...")
-
+# 修改讀取邏輯，確保只有欄位正確的行才會被處理
+    for row in reader:
+if len(row) < 10:  # 如果欄位少於 10 個，通常是備註或無效行，直接跳過
+        continue
+    # ... 後續處理 ...
     for market, url in urls.items():
         try:
             req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})

@@ -30,7 +30,8 @@ def download_data():
         try:
             req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             with urlopen(req, timeout=30) as res:
-                content = res.read().decode('utf-8-sig')
+                content = res.read().decode('big5', errors='ignore')
+                #content = res.read().decode('utf-8-sig')
                 
             file_path = SAVE_DIR / f"台股每日收盤價_{market}_{today_str}.csv"
             with open(file_path, "w", encoding="utf-8-sig") as f:

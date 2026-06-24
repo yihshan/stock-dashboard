@@ -30,7 +30,7 @@ RECIPIENTS = [
 ]
 
 # 密件副本收件人清單
-BCC_RECIPIENTS = [
+#BCC_RECIPIENTS = [
     "pp4740qq@gmail.com",
     "a0939390292@gmail.com",
     "sk.hsieh@yahoo.com.tw",

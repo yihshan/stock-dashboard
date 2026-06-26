@@ -238,7 +238,7 @@ def clean_price(val):
     try: return float(s)
     except: return 0.0
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def load_data():
     if not INVENTORY_FILE.exists(): return None, None, ["❌ 找不到庫存檔案"]
     try:

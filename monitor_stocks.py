@@ -181,19 +181,28 @@ def check_inventory_and_monitor():
         except Exception as e:
             print(f"❌ 處理監控股票買進比對時發生錯誤: {e}")
 
-    # ==========================================
+# ==========================================
     # 3. 雙通道通知發送 (Line + Email)
     # ==========================================
     if alerts:
         email_subject = f"📊 【台股大波段策略決策報告】基準日: {report_date}"
         full_message = f"報告基準日: {report_date}\n\n系統偵測到以下股票已觸發策略基準線：\n\n" + "\n---------------------\n".join(alerts)
         
-        # 通道一：發送 Line
-        send_line_message("\n" + email_subject + "\n" + "\n---------------------\n".join(alerts))
+        # 通道一：發送 Line (適應您 line_messaging.py 的 user_id 與 message 雙參數架構)
+        line_msg = "\n" + email_subject + "\n" + "\n---------------------\n".join(alerts)
+        try:
+            # 從環境變數或 config 讀取 Line User ID，若無則傳入空字串或 None
+            line_user_id = os.getenv("LINE_USER_ID") or getattr(config, 'LINE_USER_ID', '')
+            send_line_message(line_user_id, line_msg)
+        except TypeError:
+            # 防呆：如果您的函式參數順序不同，自動嘗試另一種呼叫方式
+            try: send_line_message(line_msg)
+            except Exception as le: print(f"⚠️ Line 發送失敗: {le}")
+        except Exception as e:
+            print(f"⚠️ Line 發送時發生未預期錯誤: {e}")
         
         # 通道二：發送 Email 通知
-        send_email_notification(email_subject, full_message)
-        
+        send_email_notification(email_subject, full_message)        
         print("🔔 雙通道策略通知已執行完畢。")
     else:
         print("✅ 今日全數個股皆處於安全波段中，未觸發任何買賣基準線。")

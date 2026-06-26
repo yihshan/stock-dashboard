@@ -1,273 +1,202 @@
-import pandas as pd
-import numpy as np
 import os
 import glob
 import re
+import csv
 import smtplib
-import requests
-import urllib.parse
-import urllib3
-from datetime import datetime, date
+import pandas as pd
+from datetime import datetime
 from pathlib import Path
 from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import sys
+from email.header import Header
 
-# 載入 LINE 發送模組
-from line_messaging import send_line_message
+# ==========================================
+# 1. 外部通知模組整合 (Line & Email)
+# ==========================================
 
-# 隱藏 SSL 警告
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# 試圖導入 Line 訊息模組
+try:
+    from line_messaging import send_line_message
+except ModuleNotFoundError:
+    print("⚠️ 找不到 line_messaging 模組，將改為僅在日誌中輸出警告。")
+    def send_line_message(msg):
+        print(f"[Line 模擬器] {msg}")
 
-# 強制 UTF-8 輸出
-if sys.stdout.encoding != 'utf-8':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+def send_email_notification(subject, content_text):
+    """透過 Gmail SMTP 自動發送電子郵件通知"""
+    email_user = os.getenv("EMAIL_USER")
+    email_password = os.getenv("EMAIL_PASSWORD")
+    
+    # 預設收件者為發信者本人，若 config 內有其他設定可在此擴充
+    recipients = [email_user] 
+    
+    if not email_user or not email_password:
+        print("⚠️ 未偵測到 EMAIL_USER 或 EMAIL_PASSWORD 環境變數，跳過 Email 發送。")
+        return False
+        
+    try:
+        # 建立郵件主體
+        msg = MIMEText(content_text, 'plain', 'utf-8')
+        msg['From'] = Header(f"台股自動監控機器人 <{email_user}>", 'utf-8')
+        msg['To'] = Header(", ".join(recipients), 'utf-8')
+        msg['Subject'] = Header(subject, 'utf-8')
+        
+        # 連線至 Gmail SMTP 伺服器 (使用 TLS 加密)
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(email_user, email_password)
+        server.sendmail(email_user, recipients, msg.as_string())
+        server.quit()
+        print("📨 [Email 系統] 策略決策報告已成功寄出！")
+        return True
+    except Exception as e:
+        print(f"❌ [Email 系統] 發送郵件失敗: {e}")
+        return False
 
+# ==========================================
+# 2. 資料路徑與初始化
+# ==========================================
 try:
     import config
+    DATA_DIR = Path(config.DATA_DIR)
 except ImportError:
-    print("❌ 找不到 config.py，請確保設定檔存在。")
-    sys.exit(1)
+    DATA_DIR = Path("./data")
 
-BASE_DIR = Path(config.DATA_DIR)
-MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
+INVENTORY_FILE = DATA_DIR / "庫存股票.xlsx"
+MONITOR_FILE = DATA_DIR / "監控股票.xlsx"
 
-# --- 日期與字串處理輔助函式 ---
-def parse_date(val):
-    if pd.isna(val): return None
-    s = str(val).strip().split(' ')[0]
-    if not s: return None
-    for sep in ['/', '-']:
-        parts = s.split(sep)
-        if len(parts) == 3:
-            try: return date(int(parts[0]) if int(parts[0]) > 1911 else int(parts[0]) + 1911, int(parts[1]), int(parts[2]))
-            except: continue
-    digits = re.sub(r'\D', '', s)
-    if len(digits) == 8:
-        try: return datetime.strptime(digits, '%Y%m%d').date()
-        except: pass
-    elif len(digits) == 7:
-        try: return date(int(digits[:3]) + 1911, int(digits[3:5]), int(digits[5:]))
-        except: pass
-    return None
-
-def extract_date_from_filename(filename):
-    match = re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})', filename)
-    if match: return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-    match = re.search(r'(\d{8})|(\d{7})', filename)
-    if match:
-        d = match.group()
-        return datetime.strptime(d, '%Y%m%d').date() if len(d) == 8 else date(int(d[:3]) + 1911, int(d[3:5]), int(d[5:]))
-    return None
-
-def clean_price(val):
-    try: return float(str(val).replace(',', '').strip())
-    except: return np.nan
-
-# --- 技術指標計算模組 ---
-def calculate_k9(df):
-    df = df.sort_values('Date').reset_index(drop=True)
-    df['L9'] = df['Low'].rolling(window=9).min() if not (df['High'] == df['Close']).all() else df['Close'].rolling(window=9).min()
-    df['H9'] = df['High'].rolling(window=9).max() if not (df['High'] == df['Close']).all() else df['Close'].rolling(window=9).max()
-    denom = df['H9'] - df['L9']
-    df['RSV'] = 100 * (df['Close'] - df['L9']) / denom
-    df.loc[denom == 0, 'RSV'] = 50.0
+def load_latest_close_prices():
+    """讀取最新的台股合併收盤價 CSV 檔案"""
+    csv_files = glob.glob(str(DATA_DIR / "台股每日收盤價_*.csv"))
+    if not csv_files:
+        print("❌ 找不到任何收盤價 CSV 檔案。")
+        return {}, None
     
-    k_vals, d_vals = [], []
-    current_k, current_d = 50.0, 50.0
-    for rsv in df['RSV']:
-        if pd.isna(rsv): 
-            k_vals.append(np.nan)
-            d_vals.append(np.nan)
-        else:
-            current_k = (2/3) * current_k + (1/3) * rsv
-            current_d = (2/3) * current_d + (1/3) * current_k
-            k_vals.append(current_k)
-            d_vals.append(current_d)
-    df['K'] = k_vals
-    df['D'] = d_vals
-    return df
-
-def calculate_macd(df):
-    df = df.sort_values('Date').copy()
-    ema12 = df['Close'].ewm(span=12, adjust=True).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=True).mean()
-    df['DIF'] = ema12 - ema26
-    df['MACD'] = df['DIF'].ewm(span=9, adjust=True).mean()
-    df['OSC'] = (df['DIF'] - df['MACD'])
-    return df['DIF'], df['MACD'], df['OSC']
-
-# --- CSV 歷史資料讀取模組 ---
-def get_stock_history(stock_id, stock_name):
-    data = []
-    clean_name = re.sub(r'\(.*?\)', '', stock_name).strip()
-    s_id = str(stock_id).strip()
+    latest_file = max(csv_files, key=os.path.basename)
+    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(latest_file))
+    report_date = date_match.group(1) if date_match else "未知日期"
     
-    for f in glob.glob(str(BASE_DIR / "*.csv")):
-        try:
-            try: df = pd.read_csv(f, encoding='utf-8-sig')
-            except: df = pd.read_csv(f, encoding='cp950')
-            
-            date_col, name_col, id_col, close_col, high_col, low_col = None, None, None, None, None, None
-            
-            for col in df.columns:
-                c = str(col).strip()
-                if any(x in c for x in ['日期', 'Date']): date_col = col
-                if any(x in c for x in ['證券代號', 'Code', '股票代號']): id_col = col
-                if any(x in c for x in ['名稱', 'Name']): name_col = col
-                if any(x in c for x in ['收盤', 'Close', 'ClosingPrice']): close_col = col
-                if any(x in c for x in ['最高', 'High', 'HighestPrice']): high_col = col
-                if any(x in c for x in ['最低', 'Low', 'LowestPrice']): low_col = col
-            
-            if id_col and s_id:
-                mask = df[id_col].astype(str).str.replace('"', '').str.strip() == s_id
-            elif name_col:
-                mask = df[name_col].astype(str).str.contains(clean_name, na=False)
-            else:
-                mask = None
-            
-            if mask is not None and mask.sum() > 0:
-                row = df[mask].iloc[0]
-                dt = parse_date(row[date_col]) if date_col else extract_date_from_filename(os.path.basename(f))
-                if dt and not pd.isna(clean_price(row[close_col])):
-                    c_val = clean_price(row[close_col])
-                    h_val = clean_price(row[high_col]) if high_col else c_val
-                    l_val = clean_price(row[low_col]) if low_col else c_val
-                    data.append({'Date': dt, 'Close': c_val, 'High': h_val, 'Low': l_val})
-        except: continue
-        
-    return pd.DataFrame(data).sort_values('Date').drop_duplicates('Date') if data else pd.DataFrame()
-
-# --- AI 新聞摘要模組 ---
-def fetch_stock_news(stock_name):
+    price_map = {}
     try:
-        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
-        headers = {'Content-Type': 'application/json', 'x-goog-api-key': str(config.GEMINI_API_KEY).strip()}
-        prompt = f"分析台股 {stock_name} 相關新聞，請給 50 字以內的精華摘要。"
-        resp = requests.post(api_url, json={"contents": [{"parts": [{"text": prompt}]}]}, headers=headers, timeout=20, verify=False)
-        if resp.status_code == 200:
-            return "\n【AI 焦點新聞】" + resp.json()['candidates'][0]['content']['parts'][0]['text']
-        return "" 
-    except: 
-        return ""
-
-# --- Email 派送模組 (安全字串拼接版) ---
-def send_summary_email(all_stocks):
-    if not all_stocks: return
-    msg = MIMEMultipart()
-    msg['Subject'] = f"📊 每日台股技術指標總覽 - {date.today()}"
-    msg['From'] = config.EMAIL_USER
-    msg['To'] = ", ".join(config.RECIPIENTS)
-    if 'Bcc' in msg: del msg['Bcc']
-
-    k_threshold = getattr(config, 'K_THRESHOLD', 15)
-    table_rows = ""
-    for s in all_stocks:
-        k_style = "color:red; font-weight:bold;" if s['k'] < k_threshold else ""
-        row = "<tr>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'>{s['name']} ({s['id']})</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['close']:.2f}</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right; {k_style}'>{s['k']:.2f}</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['d']:.2f}</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['dif']:.2f}</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['macd']:.2f}</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['osc']:.2f}</td>"
-        row += "</tr>"
-        table_rows += row
+        try: df = pd.read_csv(latest_file, encoding='cp950')
+        except: df = pd.read_csv(latest_file, encoding='utf-8')
         
-    html = (
-        "<html>"
-        "<body style=\"font-family: 'Microsoft JhengHei', sans-serif;\">"
-        "<h2 style=\"color: #1a365d;\">📊 每日台股技術指標自動彙整</h2>"
-        f"<p>以下為關注個股最新日線指標 (K值低於 {k_threshold} 會以紅字標註)：</p>"
-        "<table style=\"width:100%; border-collapse:collapse; margin-top:20px;\">"
-        "<thead><tr style=\"background-color: #004a99; color: white;\">"
-        "<th style=\"padding:12px; border:1px solid #ddd;\">股票名稱</th>"
-        "<th style=\"padding:12px; border:1px solid #ddd;\">收盤價</th>"
-        "<th style=\"padding:12px; border:1px solid #ddd;\">日K值</th>"
-        "<th style=\"padding:12px; border:1px solid #ddd;\">日D值</th>"
-        "<th style=\"padding:12px; border:1px solid #ddd;\">DIF</th>"
-        "<th style=\"padding:12px; border:1px solid #ddd;\">MACD</th>"
-        "<th style=\"padding:12px; border:1px solid #ddd;\">OSC(柱狀體)</th>"
-        "</tr></thead>"
-        f"<tbody>{table_rows}</tbody>"
-        "</table>"
-        "</body>"
-        "</html>"
-    )
-    msg.attach(MIMEText(html, 'html'))
-    
-    try:
-        with smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT) as server:
-            server.starttls()
-            server.login(config.EMAIL_USER, config.EMAIL_PASSWORD)
-            targets = config.RECIPIENTS + getattr(config, 'BCC_RECIPIENTS', [])
-            for target in targets:
-                server.sendmail(config.EMAIL_USER, target, msg.as_string())
-        print("✅ 總覽郵件發送成功")
-    except Exception as e: 
-        print(f"❌ 郵件發送失敗: {e}")
+        name_col, close_col = None, None
+        for col in df.columns:
+            c = str(col).strip()
+            if any(x in c for x in ['名稱', '證券名稱', '股票名稱']): name_col = col
+            if any(x in c for x in ['收盤', '收盤價', 'Close']): close_col = col
+            
+        if name_col and close_col:
+            for _, row in df.iterrows():
+                name = str(row[name_col]).strip()
+                try:
+                    p_str = str(row[close_col]).replace(',', '').strip()
+                    price_map[name] = float(p_str)
+                except: pass
+    except Exception as e:
+        print(f"❌ 讀取收盤價明細失敗: {e}")
+        
+    return price_map, report_date
 
-# --- 主程式 ---
-def main():
-    print(f"🚀 啟動技術分析監控... (日期: {date.today()})")
-    
-    if not MONITOR_FILE.exists():
-        print(f"❌ 找不到監控檔案: {MONITOR_FILE}")
+def check_inventory_and_monitor():
+    price_map, report_date = load_latest_close_prices()
+    if not price_map:
         return
-        
-    monitor_df = pd.read_excel(MONITOR_FILE)
     
-    name_col = next((col for col in monitor_df.columns if '名稱' in str(col)), monitor_df.columns[0])
-    id_col = next((col for col in monitor_df.columns if '代號' in str(col)), None)
+    print(f"💡 [基準日: {report_date}] 開始執行大波段策略邏輯監控...")
+    alerts = []
     
-    all_stocks = []
-    for _, row in monitor_df.iterrows():
-        name = str(row[name_col]).strip()
-        s_id = str(row[id_col]).strip() if id_col and pd.notna(row[id_col]) else ""
-        
-        if not s_id:
-            match = re.search(r'\((\d+)\)', name)
-            s_id = match.group(1) if match else ""
+    # ==========================================
+    # 核心邏輯一：庫存股票大波段「移動停利」追蹤
+    # ==========================================
+    if INVENTORY_FILE.exists():
+        try:
+            inv_df = pd.read_excel(INVENTORY_FILE)
+            for col in ['移動停利百分比(%)', '波段最高價', '保本停損價']:
+                if col not in inv_df.columns: inv_df[col] = None
+                
+            updated_rows = []
             
-        if not name or name == 'nan': continue
+            for name, group in inv_df.groupby('股票名稱'):
+                name = str(name).strip()
+                total_shares = group['股數'].sum()
+                if total_shares <= 0: continue
+                
+                avg_cost = (group['成本'] * group['股數']).sum() / total_shares
+                
+                trail_pct = group['移動停利百分比(%)'].dropna().head(1).values
+                trail_pct = float(trail_pct[0]) if len(trail_pct) > 0 and not pd.isna(trail_pct[0]) else 15.0
+                
+                base_stop = group['保本停損價'].dropna().head(1).values
+                base_stop = float(base_stop[0]) if len(base_stop) > 0 and not pd.isna(base_stop[0]) else avg_cost
+                
+                highest_record = group['波段最高價'].dropna().head(1).values
+                highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
+                
+                current_price = price_map.get(name, 0.0)
+                
+                if current_price > 0:
+                    if current_price > highest_price:
+                        highest_price = current_price
+                        print(f"🚀 {name} 創波段新高！更新最高價為: {highest_price}")
+                    
+                    sell_trigger_price = highest_price * (1 - (trail_pct / 100))
+                    
+                    if current_price <= sell_trigger_price:
+                        alerts.append(f"⚠️ [庫存賣出預警] {name}\n  - 今日收盤: {current_price}\n  - 波段高點: {highest_price}\n  - 已回撤超過 {trail_pct}%\n  - 觸發移動停利線 ({sell_trigger_price:.1f})，建議落袋為安！")
+                    elif current_price <= base_stop:
+                        alerts.append(f"🛑 [保本停損觸發] {name}\n  - 今日收盤: {current_price}\n  - 綜合平均成本: {avg_cost:.1f}\n  - 觸發保本停損底線 ({base_stop:.1f})，建議全數離場！")
+                
+                for _, row in group.iterrows():
+                    row['移動停利百分比(%)'] = trail_pct
+                    row['波段最高價'] = highest_price
+                    row['保本停損價'] = base_stop
+                    updated_rows.append(row)
+                    
+            new_inv_df = pd.DataFrame(updated_rows)
+            new_inv_df.to_excel(INVENTORY_FILE, index=False)
+            print("💾 庫存股票之最新波段最高價已成功同步回存至 Excel。")
             
-        df = get_stock_history(s_id, name)
-        if len(df) < 10: 
-            continue
-            
-        df = calculate_k9(df)
-        dif, macd, osc = calculate_macd(df)
+        except Exception as e:
+            print(f"❌ 處理庫存大波段監控時發生錯誤: {e}")
+
+    # ==========================================
+    # 核心邏輯二：監控股票「買進基準線」比對
+    # ==========================================
+    if MONITOR_FILE.exists():
+        try:
+            mon_df = pd.read_excel(MONITOR_FILE)
+            if '買進目標價' in mon_df.columns:
+                for _, row in mon_df.iterrows():
+                    name = str(row['股票名稱']).strip()
+                    target_price = row['買進目標價']
+                    pe_limit = row['買進本益比上限'] if '買進本益比上限' in mon_df.columns else None
+                    
+                    if pd.isna(target_price): continue
+                    
+                    current_price = price_map.get(name, 0.0)
+                    if current_price > 0 and current_price <= float(target_price):
+                        pe_msg = f" (本益比門檻: {pe_limit}x)" if not pd.isna(pe_limit) else ""
+                        alerts.append(f"🎯 [監控買進提示] {name}\n  - 今日收盤: {current_price}\n  - 買進目標價: {target_price}{pe_msg}\n  - 股價已修正至大波段安全邊際買點，建議分批佈局！")
+        except Exception as e:
+            print(f"❌ 處理監控股票買進比對時發生錯誤: {e}")
+
+    # ==========================================
+    # 3. 雙通道通知發送 (Line + Email)
+    # ==========================================
+    if alerts:
+        email_subject = f"📊 【台股大波段策略決策報告】基準日: {report_date}"
+        full_message = f"報告基準日: {report_date}\n\n系統偵測到以下股票已觸發策略基準線：\n\n" + "\n---------------------\n".join(alerts)
         
-        latest = df.iloc[-1]
-        current_k = latest['K']
-        current_d = latest['D']
-        current_osc = osc.iloc[-1]
-        prev_osc = osc.iloc[-2]
+        # 通道一：發送 Line
+        send_line_message("\n" + email_subject + "\n" + "\n---------------------\n".join(alerts))
         
-        k_threshold = getattr(config, 'K_THRESHOLD', 15)
-        if current_k < k_threshold:
-# and current_osc < 0 and current_osc > prev_osc:
-            news = fetch_stock_news(name)
-            msg_text = f"🚨【逢低布局警示】{name} ({s_id})\n最新收盤價：{latest['Close']:.2f}\n狀態：K值 <{k_threshold} 且MACD綠柱收斂！{news}\n\n💡 由Agentic AI系統自動發送"
-            send_line_message(getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', ''), getattr(config, 'LINE_USER_ID', ''), msg_text)
-            
-        all_stocks.append({
-            'name': name, 
-            'id': s_id, 
-            'close': latest['Close'], 
-            'k': current_k,
-            'd': current_d,
-            'dif': dif.iloc[-1],
-            'macd': macd.iloc[-1],
-            'osc': current_osc
-        })
+        # 通道二：發送 Email 通知
+        send_email_notification(email_subject, full_message)
         
-    if all_stocks:
-        send_summary_email(all_stocks)
+        print("🔔 雙通道策略通知已執行完畢。")
     else:
-        print("⚠️ 沒有足夠的資料來產生監控報告。")
+        print("✅ 今日全數個股皆處於安全波段中，未觸發任何買賣基準線。")
 
 if __name__ == "__main__":
-    main()
+    check_inventory_and_monitor()

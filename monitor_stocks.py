@@ -165,14 +165,13 @@ def get_report_date():
     date_match = re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(latest_file))
     return date_match.group(1) if date_match else str(date.today())
 
-# --- 升級版雙料 Email 派送模組 (包含大波段預警 + 技術指標總覽) ---
+# --- 升級版雙料 Email 派送模組 ---
 def send_combined_email(report_date, strategy_alerts, all_stocks):
     msg = MIMEMultipart()
     msg['Subject'] = f"📊 台股策略決策報告與技術指標總覽 - {report_date}"
     msg['From'] = config.EMAIL_USER
     msg['To'] = ", ".join(config.RECIPIENTS)
 
-    # 1. 建立大波段策略警告區塊的 HTML
     if strategy_alerts:
         alert_html = (
             "<div style='background-color: #fffaf0; border-left: 5px solid #dd6b20; padding: 15px; margin-bottom: 25px; border-radius: 4px;'>"
@@ -191,7 +190,6 @@ def send_combined_email(report_date, strategy_alerts, all_stocks):
             "</div>"
         )
 
-    # 2. 建立原本的每日技術指標表格 (完美防呆 NaN 數值)
     k_threshold = getattr(config, 'K_THRESHOLD', 15)
     table_rows = ""
     for s in all_stocks:
@@ -280,11 +278,9 @@ def main():
             df = get_stock_history(s_id, name)
             if df.empty: continue
             
-            # 【重要修正】優先提取今日最新的市價，確保大波段監控不受歷史天數限制！
             latest = df.iloc[-1]
             current_price = latest['Close']
             
-            # 🎯 優先進行大波段「買進目標價」比對
             if '買進目標價' in monitor_df.columns and pd.notna(row['買進目標價']):
                 target_price = float(row['買進目標價'])
                 pe_limit = row['買進本益比上限'] if '買進本益比上限' in monitor_df.columns else None
@@ -292,7 +288,6 @@ def main():
                     pe_msg = f" (本益比門檻: {pe_limit}x)" if pd.notna(pe_limit) else ""
                     strategy_alerts.append(f"🎯 [監控買進提示] {name}\n  - 今日收盤: {current_price}\n  - 買進目標價: {target_price}{pe_msg}\n  - 股價已修正至大波段安全邊際買點，建議分批佈局！")
 
-            # --- 歷史保護過濾：若天數不滿 10 天，略過技術指標(KD/MACD)計算，但前方的價格監控依然生效！ ---
             if len(df) < 10: 
                 print(f"⚠️ {name} 歷史天數不足 10 筆，略過日線技術指標計算。")
                 all_stocks_data[name] = {
@@ -314,7 +309,6 @@ def main():
                 'k': current_k, 'd': current_d, 'dif': dif.iloc[-1], 'macd': macd.iloc[-1], 'osc': current_osc
             }
             
-            # 舊版低K值 Line 逢低布局警示保留
             k_threshold = getattr(config, 'K_THRESHOLD', 15)
             if current_k < k_threshold:
                 news = fetch_stock_news(name)
@@ -322,7 +316,7 @@ def main():
                 send_line_message(getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', ''), getattr(config, 'LINE_USER_ID', ''), msg_text)
 
     # ==========================================
-    # 核心二：庫存股票大波段「移動停利」追蹤
+    # 核心二：庫存股票大波段「移動停利」追蹤（修正：自動補抓歷史最高價）
     # ==========================================
     if INVENTORY_FILE.exists():
         try:
@@ -341,18 +335,29 @@ def main():
                 trail_pct = float(trail_pct[0]) if len(trail_pct) > 0 and not pd.isna(trail_pct[0]) else 15.0
                 base_stop = group['保本停損價'].dropna().head(1).values
                 base_stop = float(base_stop[0]) if len(base_stop) > 0 and not pd.isna(base_stop[0]) else avg_cost
+                
+                # 讀取 Excel 內存紀錄
                 highest_record = group['波段最高價'].dropna().head(1).values
                 highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
                 
                 current_price = all_stocks_data[name]['close'] if name in all_stocks_data else np.nan
-                if pd.isna(current_price):
-                    hist_df = get_stock_history("", name)
-                    current_price = hist_df.iloc[-1]['Close'] if not hist_df.empty else 0.0
+                
+                # 重新去所有 CSV 歷史紀錄中找出真正的歷史最大值作為初始安全防線
+                hist_df = get_stock_history("", name)
+                max_in_history = hist_df['Close'].max() if not hist_df.empty else current_price
+                if pd.isna(current_price) and not hist_df.empty:
+                    current_price = hist_df.iloc[-1]['Close']
+
+                # 【重要邏輯修正】：若 Excel 內最高價為 0 或空白，優先採用資料夾中所有歷史數據的最大值（如 2510 / 123.15）
+                if highest_price == 0.0 or pd.isna(highest_price):
+                    highest_price = max_in_history
+                    print(f"ℹ️ {name} 初始化成功！自動由歷史資料庫調取最高價基準：{highest_price}")
 
                 if current_price > 0:
+                    # 只有今天收盤價比歷史最高價（如 2510）還要高時，才是真正的突破新高
                     if current_price > highest_price:
                         highest_price = current_price
-                        print(f"🚀 {name} 創波段新高！更新最高價為: {highest_price}")
+                        print(f"🚀 {name} 真正創波段新高！更新最高價為: {highest_price}")
                     
                     sell_trigger_price = highest_price * (1 - (trail_pct / 100))
                     if current_price <= sell_trigger_price:
@@ -368,7 +373,7 @@ def main():
                     
             new_inv_df = pd.DataFrame(updated_rows)
             new_inv_df.to_excel(INVENTORY_FILE, index=False)
-            print("💾 庫存股票之最新波段最高價已成功同步回存至 Excel。")
+            print("💾 庫存股票之波段最高價已與歷史資料庫完成記憶同步。")
         except Exception as e:
             print(f"❌ 處理庫存大波段監控時發生錯誤: {e}")
 

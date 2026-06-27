@@ -360,31 +360,31 @@ def main():
                         print(f"🚀 {name} 真正創波段新高！更新最高價為: {highest_price}")
                     
                     sell_trigger_price = highest_price * (1 - (trail_pct / 100))
-                    if current_price > 0:
-    if current_price > highest_price:
-        highest_price = current_price
-        print(f"🚀 {name} 真正創波段新高！更新最高價為: {highest_price}")
-    
-    sell_trigger_price = highest_price * (1 - (trail_pct / 100))
-    
-    # 【優先權 1】：只要收盤價跌破保本停損價（成本），一律定性為停損，拒絕文字盲目樂觀
-    if current_price <= base_stop:
-        strategy_alerts.append(
-            f"🛑 [保本停損觸發] {name}\n"
-            f"  - 今日收盤: {current_price}\n"
-            f"  - 綜合平均成本: {avg_cost:.1f}\n"
-            f"  - 觸發保本停損底線 ({base_stop:.1f})，部位已轉為虧損，建議嚴守紀律停損離場！"
-        )
-    # 【優先權 2】：在成本之上、但跌破移動停利線，這才叫真正的利潤落袋
-    elif current_price <= sell_trigger_price:
-        strategy_alerts.append(
-            f"⚠️ [庫存移動停利] {name}\n"
-            f"  - 今日收盤: {current_price}\n"
-            f"  - 波段高點: {highest_price}\n"
-            f"  - 已從高點回撤超過 {trail_pct}%\n"
-            f"  - 觸發移動停利線 ({sell_trigger_price:.1f})，尚有波段利潤，建議落袋為安！"
-        )
-                
+                if current_price > 0:
+                    # 只有今天收盤價比歷史最高價（如 2510）還要高時，職能算是真正的突破新高
+                    if current_price > highest_price:
+                        highest_price = current_price
+                        print(f"🚀 {name} 真正創波段新高！更新最高價為: {highest_price}")
+                    
+                    sell_trigger_price = highest_price * (1 - (trail_pct / 100))
+                    
+                    # 【優先權 1】：只要收盤價跌破保本停損價（成本），一律定性為停損，拒絕文字盲目樂觀
+                    if current_price <= base_stop:
+                        strategy_alerts.append(
+                            f"🛑 [保本停損觸發] {name}\n"
+                            f"  - 今日收盤: {current_price}\n"
+                            f"  - 綜合平均成本: {avg_cost:.1f}\n"
+                            f"  - 觸發保本停損底線 ({base_stop:.1f})，部位已轉為虧損，建議嚴守紀律停損離場！"
+                        )
+                    # 【優先權 2】：在成本之上、但跌破移動停利線，這才叫真正的利潤落袋
+                    elif current_price <= sell_trigger_price:
+                        strategy_alerts.append(
+                            f"⚠️ [庫存移動停利] {name}\n"
+                            f"  - 今日收盤: {current_price}\n"
+                            f"  - 波段高點: {highest_price}\n"
+                            f"  - 已從高點回撤超過 {trail_pct}%\n"
+                            f"  - 觸發移動停利線 ({sell_trigger_price:.1f})，尚有波段利潤，建議落袋為安！"
+                        )                
                 for _, row in group.iterrows():
                     row['移動停利百分比(%)'] = trail_pct
                     row['波段最高價'] = highest_price

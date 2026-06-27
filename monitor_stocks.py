@@ -179,11 +179,10 @@ def send_combined_email(report_date, strategy_alerts, all_stocks):
             "<h3 style='color: #dd6b20; margin-top: 0;'>⚠️ 大波段策略買賣觸發提示</h3>"
             "<ul style='padding-left: 20px; line-height: 1.6; color: #2d3748;'>"
         )
-    for act in strategy_alerts:
-            # 先在外面把換行符號替換掉，避免在 f-string 內使用反斜線
+        for act in strategy_alerts:
             act_br = act.replace('\n', '<br>')
             alert_html += f"<li style='margin-bottom: 8px;'>{act_br}</li>"
-            alert_html += "</ul></div>"
+        alert_html += "</ul></div>"
     else:
         alert_html = (
             "<div style='background-color: #f0fff4; border-left: 5px solid #38a169; padding: 15px; margin-bottom: 25px; border-radius: 4px;'>"
@@ -192,19 +191,27 @@ def send_combined_email(report_date, strategy_alerts, all_stocks):
             "</div>"
         )
 
-    # 2. 建立原本的每日技術指標表格
+    # 2. 建立原本的每日技術指標表格 (完美防呆 NaN 數值)
     k_threshold = getattr(config, 'K_THRESHOLD', 15)
     table_rows = ""
     for s in all_stocks:
-        k_style = "color:red; font-weight:bold;" if s['k'] < k_threshold else ""
+        is_nan_k = pd.isna(s['k'])
+        k_style = "color:red; font-weight:bold;" if not is_nan_k and s['k'] < k_threshold else ""
+        
+        k_val = f"{s['k']:.2f}" if not is_nan_k else "N/A"
+        d_val = f"{s['d']:.2f}" if not pd.isna(s['d']) else "N/A"
+        dif_val = f"{s['dif']:.2f}" if not pd.isna(s['dif']) else "N/A"
+        macd_val = f"{s['macd']:.2f}" if not pd.isna(s['macd']) else "N/A"
+        osc_val = f"{s['osc']:.2f}" if not pd.isna(s['osc']) else "N/A"
+
         row = "<tr>"
         row += f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'>{s['name']} ({s['id']})</td>"
         row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['close']:.2f}</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right; {k_style}'>{s['k']:.2f}</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['d']:.2f}</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['dif']:.2f}</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['macd']:.2f}</td>"
-        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['osc']:.2f}</td>"
+        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right; {k_style}'>{k_val}</td>"
+        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{d_val}</td>"
+        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{dif_val}</td>"
+        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{macd_val}</td>"
+        row += f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{osc_val}</td>"
         row += "</tr>"
         table_rows += row
         
@@ -213,7 +220,7 @@ def send_combined_email(report_date, strategy_alerts, all_stocks):
         "<body style=\"font-family: 'Microsoft JhengHei', sans-serif; padding: 20px;\">"
         "<h2 style=\"color: #1a365d;\">📊 每日台股策略監控與技術指標自動彙整</h2>"
         f"<p style='color: #4a5568;'>數據基準日：{report_date}</p>"
-        f"{alert_html}"  # 插入大波段訊號區塊
+        f"{alert_html}"  
         "<hr style='border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0;'>"
         "<h3 style=\"color: #004a99;\">📈 關注個股最新日線指標總覽</h3>"
         f"<p>指標狀態提示 (K值低於 {k_threshold} 會以紅字標註)：</p>"
@@ -271,7 +278,28 @@ def main():
             if not name or name == 'nan': continue
                 
             df = get_stock_history(s_id, name)
-            if len(df) < 10: continue
+            if df.empty: continue
+            
+            # 【重要修正】優先提取今日最新的市價，確保大波段監控不受歷史天數限制！
+            latest = df.iloc[-1]
+            current_price = latest['Close']
+            
+            # 🎯 優先進行大波段「買進目標價」比對
+            if '買進目標價' in monitor_df.columns and pd.notna(row['買進目標價']):
+                target_price = float(row['買進目標價'])
+                pe_limit = row['買進本益比上限'] if '買進本益比上限' in monitor_df.columns else None
+                if current_price <= target_price:
+                    pe_msg = f" (本益比門檻: {pe_limit}x)" if pd.notna(pe_limit) else ""
+                    strategy_alerts.append(f"🎯 [監控買進提示] {name}\n  - 今日收盤: {current_price}\n  - 買進目標價: {target_price}{pe_msg}\n  - 股價已修正至大波段安全邊際買點，建議分批佈局！")
+
+            # --- 歷史保護過濾：若天數不滿 10 天，略過技術指標(KD/MACD)計算，但前方的價格監控依然生效！ ---
+            if len(df) < 10: 
+                print(f"⚠️ {name} 歷史天數不足 10 筆，略過日線技術指標計算。")
+                all_stocks_data[name] = {
+                    'name': name, 'id': s_id, 'close': current_price, 
+                    'k': np.nan, 'd': np.nan, 'dif': np.nan, 'macd': np.nan, 'osc': np.nan
+                }
+                continue
                 
             df = calculate_k9(df)
             dif, macd, osc = calculate_macd(df)
@@ -280,9 +308,7 @@ def main():
             current_k = latest['K']
             current_d = latest['D']
             current_osc = osc.iloc[-1]
-            current_price = latest['Close']
             
-            # 存入總覽地圖
             all_stocks_data[name] = {
                 'name': name, 'id': s_id, 'close': current_price, 
                 'k': current_k, 'd': current_d, 'dif': dif.iloc[-1], 'macd': macd.iloc[-1], 'osc': current_osc
@@ -294,14 +320,6 @@ def main():
                 news = fetch_stock_news(name)
                 msg_text = f"🚨【逢低布局警示】{name} ({s_id})\n最新收盤價：{current_price:.2f}\n狀態：K值 <{k_threshold} 且MACD綠柱收斂！{news}\n\n💡 由Agentic AI系統自動發送"
                 send_line_message(getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', ''), getattr(config, 'LINE_USER_ID', ''), msg_text)
-
-            # 新增邏輯：比對監控股票的大波段「買進目標價」與本益比
-            if '買進目標價' in monitor_df.columns and pd.notna(row['買進目標價']):
-                target_price = float(row['買進目標價'])
-                pe_limit = row['買進本益比上限'] if '買進本益比上限' in monitor_df.columns else None
-                if current_price <= target_price:
-                    pe_msg = f" (本益比門檻: {pe_limit}x)" if pd.notna(pe_limit) else ""
-                    strategy_alerts.append(f"🎯 [監控買進提示] {name}\n  - 今日收盤: {current_price}\n  - 買進目標價: {target_price}{pe_msg}\n  - 股價已修正至大波段安全邊際買點，建議分批佈局！")
 
     # ==========================================
     # 核心二：庫存股票大波段「移動停利」追蹤
@@ -326,10 +344,8 @@ def main():
                 highest_record = group['波段最高價'].dropna().head(1).values
                 highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
                 
-                # 從剛剛掃描的最新價格或資料庫中取價
                 current_price = all_stocks_data[name]['close'] if name in all_stocks_data else np.nan
                 if pd.isna(current_price):
-                    # 若監控名單沒有，嘗試從歷史紀錄中抓
                     hist_df = get_stock_history("", name)
                     current_price = hist_df.iloc[-1]['Close'] if not hist_df.empty else 0.0
 
@@ -359,15 +375,13 @@ def main():
     # ==========================================
     # 核心三：雙通道分流發送 (Line + 整合 Email)
     # ==========================================
-    # Line 僅在有真正「買賣警訊」時才發送，避免干擾
     if strategy_alerts:
         line_token = getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', '')
         line_user = getattr(config, 'LINE_USER_ID', '')
         full_line_msg = f"\n📊 【台股大波段策略決策報告】\n基準日: {report_date}\n" + "\n---------------------\n".join(strategy_alerts)
         send_line_message(line_token, line_user, full_line_msg)
-        print("🔔 策略買賣訊號已單獨推播至 Line。")
+        print("🔔 策略買賣訊號已成功推播至 Line。")
 
-    # Email 無論有無訊號，天天發送整合型 HTML 報表
     if all_stocks_data:
         send_combined_email(report_date, strategy_alerts, list(all_stocks_data.values()))
 

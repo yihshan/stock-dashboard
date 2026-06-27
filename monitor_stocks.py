@@ -29,7 +29,9 @@ if sys.stdout.encoding != 'utf-8':
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-# 載入設定檔與第三方套件
+# ==========================================
+# 🛑 核心配置與全域常數定義 (最高優先權)
+# ==========================================
 try:
     import config
     import yfinance as yf
@@ -44,6 +46,15 @@ except ModuleNotFoundError:
     def send_line_message(token: str, user_id: str, msg: str) -> None:
         logger.info(f"[LINE 模擬推播] {msg}")
 
+# 嚴格在最頂層定義全域路徑，確保全檔案 Scope 皆可無縫存取
+BASE_DIR = Path(config.DATA_DIR)
+INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
+MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
+
+# 隱藏 SSL 警告
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 class DateDataParser:
     """負責處理台股特有的日期與字串格式轉換（工具類別）"""
@@ -56,19 +67,16 @@ class DateDataParser:
         if not s:
             return None
         
-        # 處理 YYYY/MM/DD 或 YYY-MM-DD
         for sep in ['/', '-']:
             parts = s.split(sep)
             if len(parts) == 3:
                 try:
                     year = int(parts[0])
-                    # 智慧識別民國年與西元年
                     corrected_year = year if year > 1911 else year + 1911
                     return date(corrected_year, int(parts[1]), int(parts[2]))
                 except ValueError:
                     continue
                     
-        # 處理純數字 20260627 或 1150627
         digits = re.sub(r'\D', '', s)
         if len(digits) == 8:
             try:
@@ -100,7 +108,6 @@ class StockDataRepository:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.report_date = str(date.today())
-        # 核心快取設計：{ "股票代號/名稱": DataFrame }
         self._historical_cache: Dict[str, pd.DataFrame] = {}
         self._initialize_database()
 
@@ -125,13 +132,11 @@ class StockDataRepository:
                 continue
                 
             try:
-                # 兼容不同券商導出格式的內部偵測
                 try:
                     df = pd.read_csv(file_path, encoding='utf-8-sig')
                 except Exception:
                     df = pd.read_csv(file_path, encoding='cp950')
                 
-                # 自動對齊欄位映射
                 col_map = {}
                 for col in df.columns:
                     c = str(col).strip()
@@ -165,7 +170,6 @@ class StockDataRepository:
                 
         if raw_data_list:
             master_df = pd.DataFrame(raw_data_list)
-            # 按股票代號與名稱進行記憶體分組快取
             if 'id' in master_df.columns:
                 for s_id, g in master_df.groupby('id'):
                     if s_id: self._historical_cache[str(s_id)] = g.sort_values('Date').drop_duplicates('Date')
@@ -278,7 +282,6 @@ class NotificationService:
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
-        # 大波段策略看板區塊
         if alerts:
             alert_html = (
                 "<div style='background-color: #fffaf0; border-left: 5px solid #dd6b20; padding: 15px; margin-bottom: 25px; border-radius: 4px;'>"
@@ -297,7 +300,6 @@ class NotificationService:
                 "</div>"
             )
 
-        # 每日技術指標大表格
         k_threshold = getattr(config, 'K_THRESHOLD', 15)
         table_rows = ""
         for s in all_stocks:
@@ -361,6 +363,7 @@ class StrategyOrchestrator:
     """架構核心：策略指揮官，負責調配各組服務元件執行完整的監控流程"""
     
     def __init__(self):
+        # 這裡會精確存取在最頂端就已經定義好、絕不踩空的全域變數 BASE_DIR
         self.repo = StockDataRepository(BASE_DIR)
         self.notifier = NotificationService()
 
@@ -394,7 +397,6 @@ class StrategyOrchestrator:
                     latest = df.iloc[-1]
                     current_price = latest['Close']
                     
-                    # 因子 A：個股大波段安全邊際買進價檢查
                     if '買進目標價' in monitor_df.columns and pd.notna(row['買進目標價']):
                         target_price = float(row['買進目標價'])
                         pe_limit = row['買進本益比上限'] if '買進本益比上限' in monitor_df.columns else None
@@ -402,7 +404,6 @@ class StrategyOrchestrator:
                             pe_msg = f" (本益比門檻: {pe_limit}x)" if pd.notna(pe_limit) else ""
                             strategy_alerts.append(f"🎯 [監控買進提示] {name}\n  - 今日收盤: {current_price}\n  - 買進目標價: {target_price}{pe_msg}\n  - 股價已修正至大波段安全邊際買點，建議分批佈局！")
 
-                    # 因子 B：右側安全動能確認濾網（需滿10筆技術天數）
                     if len(df) < 10:
                         all_stocks_output[name] = {
                             'name': name, 'id': s_id, 'close': current_price, 
@@ -423,7 +424,6 @@ class StrategyOrchestrator:
                         'k': current_k, 'd': latest['D'], 'dif': dif.iloc[-1], 'macd': macd.iloc[-1], 'osc': current_osc
                     }
                     
-                    # 多指標共振篩選：個股必須高於季線，且KD低檔勾頭向上或綠柱縮小
                     k_threshold = getattr(config, 'K_THRESHOLD', 15)
                     if current_price >= current_ma60:
                         is_right_side_confirmed = (prev_row['K'] <= 10 and current_k > 15) or (current_osc < 0 and current_osc > osc.iloc[-2] if len(osc)>1 else False)
@@ -451,7 +451,6 @@ class StrategyOrchestrator:
                     trail_pct = group['移動停利百分比(%)'].dropna().head(1).values
                     trail_pct = float(trail_pct[0]) if len(trail_pct) > 0 and not pd.isna(trail_pct[0]) else 15.0
                     
-                    # 智慧風控：保本停損線強制對齊加權成本
                     base_stop = avg_cost 
                     
                     highest_record = group['波段最高價'].dropna().head(1).values
@@ -472,7 +471,6 @@ class StrategyOrchestrator:
                         
                         sell_trigger_price = highest_price * (1 - (trail_pct / 100))
                         
-                        # 第一關：保本成本線檢查
                         if current_price <= base_stop:
                             if is_bull_market:
                                 strategy_alerts.append(
@@ -484,7 +482,6 @@ class StrategyOrchestrator:
                                     f"🛑 [鐵律清倉停損觸發] {name}\n  - 今日收盤: {current_price}\n  - 加權平均成本: {avg_cost:.1f}\n"
                                     f"  - 總體風控：大盤已確認走空轉熊！**請嚴守資金紀律，全數清倉停損離場**，保留實力！"
                                 )
-                        # 第二關：高檔移動停利線檢查
                         elif current_price <= sell_trigger_price:
                             strategy_alerts.append(
                                 f"⚠️ [庫存移動停利提示] {name}\n  - 今日收盤: {current_price}\n  - 波段最高點: {highest_price}\n"

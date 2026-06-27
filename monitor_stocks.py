@@ -179,9 +179,10 @@ def send_combined_email(report_date, strategy_alerts, all_stocks):
             "<h3 style='color: #dd6b20; margin-top: 0;'>⚠️ 大波段策略買賣觸發提示</h3>"
             "<ul style='padding-left: 20px; line-height: 1.6; color: #2d3748;'>"
         )
-        for act in strategy_alerts:
-            alert_html += f"<li style='margin-bottom: 8px;'>{act.replace('\n', '<br>')}</li>"
-        alert_html += "</ul></div>"
+for act in strategy_alerts:
+            # 先在外面把換行符號替換掉，避免在 f-string 內使用反斜線
+            act_br = act.replace('\n', '<br>')
+            alert_html += f"<li style='margin-bottom: 8px;'>{act_br}</li>"        alert_html += "</ul></div>"
     else:
         alert_html = (
             "<div style='background-color: #f0fff4; border-left: 5px solid #38a169; padding: 15px; margin-bottom: 25px; border-radius: 4px;'>"

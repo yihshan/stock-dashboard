@@ -333,7 +333,7 @@ def main():
                 avg_cost = (group['成本'] * group['股數']).sum() / total_shares
                 trail_pct = group['移動停利百分比(%)'].dropna().head(1).values
                 trail_pct = float(trail_pct[0]) if len(trail_pct) > 0 and not pd.isna(trail_pct[0]) else 15.0
-                base_stop = group['保本停損價'].dropna().head(1).values
+                base_stop = avg_cost
                 base_stop = float(base_stop[0]) if len(base_stop) > 0 and not pd.isna(base_stop[0]) else avg_cost
                 
                 # 讀取 Excel 內存紀錄
@@ -361,29 +361,54 @@ def main():
                     
                     sell_trigger_price = highest_price * (1 - (trail_pct / 100))
                 if current_price > 0:
-                    # 只有今天收盤價比歷史最高價（如 2510）還要高時，職能算是真正的突破新高
                     if current_price > highest_price:
                         highest_price = current_price
                         print(f"🚀 {name} 真正創波段新高！更新最高價為: {highest_price}")
                     
                     sell_trigger_price = highest_price * (1 - (trail_pct / 100))
                     
-                    # 【優先權 1】：只要收盤價跌破保本停損價（成本），一律定性為停損，拒絕文字盲目樂觀
+                    # 1. 優先檢查是否觸發「保本停損線（平均成本）」
                     if current_price <= base_stop:
-                        strategy_alerts.append(
-                            f"🛑 [保本停損觸發] {name}\n"
-                            f"  - 今日收盤: {current_price}\n"
-                            f"  - 綜合平均成本: {avg_cost:.1f}\n"
-                            f"  - 觸發保本停損底線 ({base_stop:.1f})，部位已轉為虧損，建議嚴守紀律停損離場！"
-                        )
-                    # 【優先權 2】：在成本之上、但跌破移動停利線，這才叫真正的利潤落袋
+                        
+                        # 🧠 因子二：檢查這檔股票是否在監控名單中，且已經進入「價值買進區」
+                        is_in_value_zone = False
+                        monitor_target = 0.0
+                        if MONITOR_FILE.exists():
+                            try:
+                                m_df = pd.read_excel(MONITOR_FILE)
+                                m_row = m_df[m_df['股票名稱'].astype(str).str.strip() == name]
+                                if not m_row.empty and '買進目標價' in m_df.columns:
+                                    monitor_target = float(m_row['買進目標價'].values[0])
+                                    if current_price <= monitor_target:
+                                        is_in_value_zone = True
+                            except: pass
+                        
+                        if is_in_value_zone:
+                            # 🎯 觸發估值防禦安全鎖：價格比您的成本低，但也已經比您的長線夢幻買點還要低了！
+                            strategy_alerts.append(
+                                f"🔄 [智慧緩衝：暫緩停損] {name}\n"
+                                f"  - 今日收盤: {current_price}\n"
+                                f"  - 綜合平均成本: {avg_cost:.1f}\n"
+                                f"  - 提示：雖已跌破成本線，但股價已同步深入您設定的長線大波段買進目標價 ({monitor_target:.1f}) 以下！\n"
+                                f"  - 決策：此處屬於產業基本面長線價值區，大盤非理性殺盤機率高，**建議暫緩盲目砍單**，可改採金字塔式分批逢低加碼。"
+                            )
+                        else:
+                            # 無基本面或估值支撐的純粹接刀失敗，硬紀律停損
+                            strategy_alerts.append(
+                                f"🛑 [保本停損觸發] {name}\n"
+                                f"  - 今日收盤: {current_price}\n"
+                                f"  - 綜合平均成本: {avg_cost:.1f}\n"
+                                f"  - 決策：部位已轉為實際虧損，且尚未進入長線安全邊際支撐區，建議嚴守紀律，全數停損離場以保護資金安全！"
+                            )
+                            
+                    # 2. 檢查是否觸發「高檔移動停利線」
                     elif current_price <= sell_trigger_price:
                         strategy_alerts.append(
                             f"⚠️ [庫存移動停利] {name}\n"
                             f"  - 今日收盤: {current_price}\n"
                             f"  - 波段高點: {highest_price}\n"
                             f"  - 已從高點回撤超過 {trail_pct}%\n"
-                            f"  - 觸發移動停利線 ({sell_trigger_price:.1f})，尚有波段利潤，建議落袋為安！"
+                            f"  - 決策：觸發移動停利線 ({sell_trigger_price:.1f})，尚有波段利潤，建議高檔獲利落袋為安！"
                         )                
                 for _, row in group.iterrows():
                     row['移動停利百分比(%)'] = trail_pct

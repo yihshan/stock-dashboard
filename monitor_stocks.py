@@ -180,7 +180,7 @@ def send_combined_email(report_date, strategy_alerts, all_stocks):
             "<ul style='padding-left: 20px; line-height: 1.6; color: #2d3748;'>"
         )
         for act in strategy_alerts:
-            alert_html += f"<li style='margin-bottom: 8px;'>{act.replace Pap='\n', '<br>'}</li>"
+            alert_html += f"<li style='margin-bottom: 8px;'>{act.replace('\n', '<br>')}</li>"
         alert_html += "</ul></div>"
     else:
         alert_html = (

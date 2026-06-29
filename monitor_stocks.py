@@ -217,7 +217,8 @@ class MarketIndicatorService:
             
             is_bull = latest_close >= ma200
             status_text = "【多頭市場】(加權指數處於年線之上，啟動智慧估值緩衝鎖)" if is_bull else "【空頭熊市】(大盤走空，全面防守開啟鐵律停損)"
-            return is_bull, f"今日加權指數收盤 {latest_close:.1f} 點，處於年線 ({ma200:.1f}) 之{'上' if is_bull else '下'} -> {status_text}"
+            direction = "上" if is_bull else "下"
+            return is_bull, f"今日加權指數收盤 {latest_close:.1f} 點，處於年線 ({ma200:.1f}) 之{direction} -> {status_text}"
         except Exception as e:
             logger.error(f"大盤總體環境解析異常: {e}，策略自動降級為【安全多頭環境】")
             return True, "⚠️ 總體環境連線異常，策略降級切換為【安全多頭環境】"
@@ -252,8 +253,10 @@ class NotificationService:
                 "<h3 style='color: #dd6b20; margin-top: 0;'>⚠️ 智慧多因子策略買賣觸發提示</h3>"
                 "<ul style='padding-left: 20px; line-height: 1.6; color: #2d3748;'>"
             )
+            # 🟢 修正點：將 .replace 反斜線換行處理完全移出 f-string 外面，確保語法絕對安全
             for act in alerts:
-                alert_html += f"<li style='margin-bottom: 8px;'>{act.replace('\n', '<br>')}</li>"
+                act_br = act.replace('\n', '<br>')
+                alert_html += f"<li style='margin-bottom: 8px;'>{act_br}</li>"
             alert_html += "</ul></div>"
         else:
             alert_html = (
@@ -286,6 +289,7 @@ class NotificationService:
                 f"</tr>"
             )
             
+        direction_label = "上" if "之上" in market_text else "下"
         html = (
             f"<html><body style=\"font-family: 'Microsoft JhengHei', sans-serif; padding: 20px;\">"
             f"<h2 style=\"color: #1a365d;\">📊 每日台股策略監控與技術指標自動彙整</h2>"

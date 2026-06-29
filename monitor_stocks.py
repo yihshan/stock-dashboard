@@ -45,6 +45,24 @@ BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 
+# 🟢 全域安全常數：2026-2027 年今明兩年預估股利與要求殖利率大腦
+DIVIDEND_PRESETS = {
+    '2330': {'name': '台積電', 'div_2026': 36.0, 'div_2027': 44.0, 'target_yield': 1.8},  
+    '2308': {'name': '台達電', 'div_2026': 26.0, 'div_2027': 34.0, 'target_yield': 1.8},  
+    '3008': {'name': '大立光', 'div_2026': 95.0, 'div_2027': 115.0, 'target_yield': 2.4}, 
+    '3017': {'name': '奇鋐', 'div_2026': 32.0, 'div_2027': 42.0, 'target_yield': 1.8},  
+    '3131': {'name': '弘塑', 'div_2026': 50.0, 'div_2027': 65.0, 'target_yield': 1.7},  
+    '3443': {'name': '創意', 'div_2026': 45.0, 'div_2027': 60.0, 'target_yield': 1.3},  
+    '6442': {'name': '光聖', 'div_2026': 18.0, 'div_2027': 26.0, 'target_yield': 1.6},  
+    '3324': {'name': '雙鴻', 'div_2026': 16.0, 'div_2027': 24.0, 'target_yield': 1.9},  
+    '6510': {'name': '精測', 'div_2026': 35.0, 'div_2027': 50.0, 'target_yield': 1.6},  
+    '3563': {'name': '牧德', 'div_2026': 12.0, 'div_2027': 18.0, 'target_yield': 2.2},  
+    '7751': {'name': '竑騰', 'div_2026': 20.0, 'div_2027': 30.0, 'target_yield': 1.9},  
+    '7734': {'name': '印能科技', 'div_2026': 55.0, 'div_2027': 75.0, 'target_yield': 2.1},  
+    '8299': {'name': '群聯', 'div_2026': 45.0, 'div_2027': 65.0, 'target_yield': 2.3},  
+    '8210': {'name': '勤誠', 'div_2026': 24.0, 'div_2027': 34.0, 'target_yield': 2.2},  
+}
+
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -268,6 +286,30 @@ class NotificationService:
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
+        preset_rows = ""
+        for s_id, cfg in DIVIDEND_PRESETS.items():
+            preset_rows += (
+                f"<tr>"
+                f"<td style='padding:6px 10px; border:1px solid #e2e8f0; text-align:center;'><b>{cfg['name']}</b><br><small style='color:#718096;'>{s_id}</small></td>"
+                f"<td style='padding:6px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2026']:.2f} 元</td>"
+                f"<td style='padding:6px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2027']:.2f} 元</td>"
+                f"<td style='padding:6px 10px; border:1px solid #e2e8f0; text-align:center; font-weight:bold; color:#2b6cb0;'>{cfg['target_yield']:.2f}%</td>"
+                f"</tr>"
+            )
+        
+        dividend_table_html = (
+            f"<div style='margin-bottom: 25px; background-color: #f7fafc; padding: 15px; border: 1px solid #e2e8f0; border-radius: 6px;'>"
+            f"<h4 style='color: #2b6cb0; margin-top: 0; margin-bottom: 12px; font-size: 15px;'>📋 2026-2027 今明兩年智慧股利估值參數基準面板</h4>"
+            f"<table style='width:100%; border-collapse:collapse; background-color: white; font-size: 13px;'>"
+            f"<thead><tr style='background-color: #2b6cb0; color: white;'>"
+            f"<th style='padding:8px 10px; border:1px solid #e2e8f0;'>股票名稱</th>"
+            f"<th style='padding:8px 10px; border:1px solid #e2e8f0;'>2026 預估配息</th>"
+            f"<th style='padding:8px 10px; border:1px solid #e2e8f0;'>2027 預估配息</th>"
+            f"<th style='padding:8px 10px; border:1px solid #e2e8f0;'>核心要求殖利率</th>"
+            f"</tr></thead><tbody>{preset_rows}</tbody></table>"
+            f"</div>"
+        )
+
         if alerts:
             alert_html = (
                 "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px;'> "
@@ -326,6 +368,7 @@ class NotificationService:
         html = (
             f"<html><body style=\"font-family: 'Microsoft JhengHei', sans-serif; padding: 20px;\">"
             f"<h2 style=\"color: #1a365d;\">📊 每日台股策略監控與技術指標自動彙整</h2>"
+            f"{dividend_table_html}"  
             f"<p style='color: #4a5568;'><b>數據基準日：</b>{report_date}</p>"
             f"<p style='background-color: #edf2f7; padding: 10px; border-radius: 4px; color: #4a5568;'>🌐 <b>總體環境監測：</b>{market_text}</p>"
             f"{alert_html}"  
@@ -365,24 +408,11 @@ class StrategyOrchestrator:
         all_stocks_output: List[Dict[str, Any]] = []
         global_stock_pool: Dict[str, Dict[str, Any]] = {}
         
-        # 🟢 建立一個用來記錄今天庫存已經觸發「撤退訊號」的隔離集合，防止策略打架
         triggered_exit_stocks = set()
-
-        dividend_valuation_presets = {
-            '2330': {'div_2026': 36.0, 'div_2027': 44.0, 'target_yield': 1.8},  
-            '2308': {'div_2026': 26.0, 'div_2027': 34.0, 'target_yield': 1.8},  
-            '3008': {'div_2026': 95.0, 'div_2027': 115.0, 'target_yield': 2.4}, 
-            '3017': {'div_2026': 32.0, 'div_2027': 42.0, 'target_yield': 1.8},  
-            '3131': {'div_2026': 50.0, 'div_2027': 65.0, 'target_yield': 1.7},  
-            '3443': {'div_2026': 45.0, 'div_2027': 60.0, 'target_yield': 1.3},  
-            '6442': {'div_2026': 18.0, 'div_2027': 26.0, 'target_yield': 1.6},  
-            '3324': {'div_2026': 16.0, 'div_2027': 24.0, 'target_yield': 1.9},  
-            '6510': {'div_2026': 35.0, 'div_2027': 50.0, 'target_yield': 1.6},  
-            '3563': {'div_2026': 12.0, 'div_2027': 18.0, 'target_yield': 2.2},  
-            '7751': {'div_2026': 20.0, 'div_2027': 30.0, 'target_yield': 1.9},  
-            '7734': {'div_2026': 55.0, 'div_2027': 75.0, 'target_yield': 2.1},  
-            '8299': {'div_2026': 45.0, 'div_2027': 65.0, 'target_yield': 2.3},  
-            '8210': {'div_2026': 24.0, 'div_2027': 34.0, 'target_yield': 2.2},  
+        
+        core_inventory_symbols = {
+            '2330', '3017', '3131', '3443', '6442', '3324', '6510', '3563', 
+            '7751', '2308', '7734', '3363', '0056', '00919', '00762', '00990A', '00985A', '00648R', '00724B'
         }
 
         # 1. 處理現有庫存移動停利與智慧停損
@@ -450,7 +480,7 @@ class StrategyOrchestrator:
                                     'desc': "大盤確認走空，請嚴守資金紀律全數清倉！"
                                 })
                                 status_str = "🛑 鐵律停損"
-                                triggered_exit_stocks.add(name)  # 🛑 記錄停損撤退
+                                triggered_exit_stocks.add(name)
                         elif current_price <= sell_trigger_price:
                             structured_alerts.append({
                                 'icon': '⚠️', 'type': '庫存移動停利', 'name': name, 'close': c_p_str,
@@ -458,10 +488,11 @@ class StrategyOrchestrator:
                                 'desc': f"觸發移動停利線 ({s_t_str})，建議獲利落袋。"
                             })
                             status_str = "⚠️ 移動停利"
-                            triggered_exit_stocks.add(name)  # ⚠️ 記錄停利撤退
+                            triggered_exit_stocks.add(name)
 
                         k_val, d_val, osc_val = np.nan, np.nan, np.nan
                         if len(hist_df) >= 9:
+                            # 🟢 修正優化 1：技術指標對齊。將排序重設索引後的 df_idx 統一傳入 MACD，杜絕錯位。
                             df_idx = MarketIndicatorService.calculate_kd9(hist_df)
                             _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
                             latest_idx = df_idx.iloc[-1]
@@ -506,7 +537,6 @@ class StrategyOrchestrator:
                             s_id = match.group(1) if match else ""
                         if not name or name == 'nan': continue
                         
-                        # 🟢 修正核心 1：訊號橫向隔離。如果該股今天已經在庫存中觸發停利、停損，強制封殺買進提示！
                         if name in triggered_exit_stocks:
                             logger.info(f"🛡️ [策略互斥防護] {name} 今日已觸發庫存撤退風控，自動抑制監控買進提示。")
                             continue
@@ -517,16 +547,16 @@ class StrategyOrchestrator:
                         latest = df.iloc[-1]
                         current_price = latest['Close']
                         
-                        if s_id in dividend_valuation_presets:
-                            cfg = dividend_valuation_presets[s_id]
+                        # 🟢 修正優化 2：型態相容。強制轉為字串進行全域常數存取，防堵型態比對死角。
+                        s_id_str = str(s_id)
+                        if s_id_str in DIVIDEND_PRESETS:
+                            cfg = DIVIDEND_PRESETS[s_id_str]
                             avg_dividend = (cfg['div_2026'] + cfg['div_2027']) / 2
                             target_price = avg_dividend / (cfg['target_yield'] / 100)
                         else:
                             target_price = current_price * 0.85
                             
                         diff_pct = ((current_price - target_price) / target_price) * 100
-                        
-                        # 🟢 修正核心 2：文義修正。如果原本就手握庫存（且安全無虞），便宜價觸發時應定義為『逢低加碼』而非新手『佈局』
                         is_already_owned = (name in global_stock_pool)
                         
                         if current_price <= target_price:
@@ -551,7 +581,6 @@ class StrategyOrchestrator:
                             latest_idx = df_idx.iloc[-1]
                             k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
                             
-                        # 如果是已被排除的庫存股，不重複在綜合面板列出第二行監控資訊
                         if is_already_owned:
                             continue
                             

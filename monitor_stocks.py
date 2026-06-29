@@ -45,7 +45,7 @@ BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 
-# 🟢 全域核心大腦：今明兩年預估股利、要求殖利率與內建決策路徑常數
+# 全域核心大腦：今明兩年預估股利、要求殖利率與內建決策路徑常數
 DIVIDEND_PRESETS = {
     '2330': {'name': '台積電', 'div_2026': 36.0, 'div_2027': 44.0, 'target_yield': 1.8},  
     '2308': {'name': '台達電', 'div_2026': 26.0, 'div_2027': 34.0, 'target_yield': 1.8},  
@@ -286,7 +286,6 @@ class NotificationService:
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
-        # 🟢 智慧型股利估值參數與策略邏輯路徑橫向融合大面板
         preset_matrix_rows = ""
         logic_desc_map = {
             '2330': {'type': '核心成長股', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '多頭環境下享智慧緩衝保護'},
@@ -304,7 +303,7 @@ class NotificationService:
             l_cfg = logic_desc_map.get(s_id, {'type': '常規追蹤股', 'trigger_buy': '現價 ≦ 股利估值目標價', 'trigger_add': '現價 ≦ 估值加倉區間', 'defense': '風控優先全面防守'})
             
             preset_matrix_rows += (
-                f"<tr style='border-bottom: 1px solid #e2e8f0;'> "
+                f"<tr style='border-bottom: 1px solid #e2e8f0;'>"
                 f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center; background-color:#f7fafc;'><b>{cfg['name']}</b><br><small style='color:#718096;'>{s_id}</small></td>"
                 f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center;'><span style='background-color:#ebf8ff; color:#2b6cb0; padding:2px 6px; border-radius:4px; font-size:12px;'>{l_cfg['type']}</span></td>"
                 f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2026']:.1f} 元</td>"
@@ -390,9 +389,9 @@ class NotificationService:
             
         html = (
             f"<html><body style=\"font-family: 'Microsoft JhengHei', sans-serif; padding: 20px;\">"
-            f"<h2 style=\"color: #1a365d;\">📊 每日台股策略監控與技術指標自動彙整</h2>"  
+            f"<h2 style=\"color: #1a365d;\">📊 每日台股策略監控與技術指標自動彙整</h2>"
+            f"{dividend_table_html}"  
             f"<p style='color: #4a5568;'><b>數據基準日：</b>{report_date}</p>"
-            f"{dividend_table_html}"
             f"<p style='background-color: #edf2f7; padding: 10px; border-radius: 4px; color: #4a5568;'>🌐 <b>總體環境監測：</b>{market_text}</p>"
             f"{alert_html}"  
             f"<hr style='border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0;'>"
@@ -469,6 +468,7 @@ class StrategyOrchestrator:
                         highest_record = group['波段最高價'].dropna().head(1).values if '波段最高價' in inv_df.columns else []
                         highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
                         
+                        # 🟢 智慧型名稱/代號雙重安全模糊辨識機制
                         s_id_target = clean_stock_id(inv_id_map.get(name, ""))
                         hist_df = self.repo.get_history(s_id_target, name)
                         if hist_df.empty: continue
@@ -528,6 +528,7 @@ class StrategyOrchestrator:
                         }
                         all_stocks_output.append(stock_res)
                         global_stock_pool[name] = stock_res
+                        global_stock_pool[clean_stock_name(name)] = stock_res # 模糊鍵防護
                         
                         for _, row in group.iterrows():
                             row_copy = row.copy()
@@ -578,7 +579,10 @@ class StrategyOrchestrator:
                             target_price = current_price * 0.85
                             
                         diff_pct = ((current_price - target_price) / target_price) * 100
-                        is_already_owned = (name in global_stock_pool)
+                        
+                        # 🟢 名稱或代號只要有一個存在於 global_stock_pool，即斷言「已持有持股」
+                        c_name = clean_stock_name(name)
+                        is_already_owned = (name in global_stock_pool or c_name in global_stock_pool)
                         
                         if current_price <= target_price:
                             alert_type = '庫存逢低加碼提示' if is_already_owned else '監控買進提示'

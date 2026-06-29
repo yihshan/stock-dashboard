@@ -172,17 +172,14 @@ class StockDataRepository:
         logger.info(f"✅ 政府歷史數據讀取完畢，總紀錄數: {len(self.master_df)}")
 
     def get_history(self, stock_id: str, stock_name: str) -> pd.DataFrame:
-        """🟢 修正核心 1：嚴格落實『代號優先精準匹配』，斬斷不安全字頭模糊對齊引起的股價污染"""
         target_id = clean_stock_id(stock_id)
         target_name = clean_stock_name(stock_name)
         
         if self.master_df.empty: return pd.DataFrame()
         
-        # 1. 如果有明確代號，實施最嚴格的代號唯一篩選（防堵大立/大立光、台達化/台達電碰撞）
         if target_id:
             df_res = self.master_df[self.master_df['id'] == target_id]
         else:
-            # 2. 只有在沒代號時才使用名稱，且名稱必須去除括號全字匹配，或極窄幅度的後綴融通（如 聯亞 vs 聯亞光電）
             cond_exact = (self.master_df['name'] == target_name)
             cond_remap = (self.master_df['name'] == f"{target_name}光電") | (self.master_df['name'] == f"{target_name}科技")
             df_res = self.master_df[cond_exact | cond_remap]
@@ -367,66 +364,14 @@ class StrategyOrchestrator:
         structured_alerts: List[Dict[str, str]] = []
         all_stocks_output: List[Dict[str, Any]] = []
         global_stock_pool: Dict[str, Dict[str, Any]] = {}
+        
+        # 🟢 定義已知長期核心庫存白名單（防止 Excel 被清空時發生的監控降級與數值錯位）
+        core_inventory_symbols = {
+            '2330', '3017', '3131', '3443', '6442', '3324', '6510', '3563', 
+            '7751', '2308', '7734', '3363', '0056', '00919', '00762', '00990A', '00985A', '00648R', '00724B'
+        }
 
-        # 1. 處理觀察/監控名單
-        if MONITOR_FILE.exists():
-            try:
-                monitor_df = pd.read_excel(MONITOR_FILE)
-                if monitor_df.empty or len(monitor_df.columns) == 0:
-                    logger.warning("⚠️ 監控股票.xlsx 內容為空。")
-                else:
-                    name_col = next((col for col in monitor_df.columns if '名稱' in str(col)), monitor_df.columns[0])
-                    id_col = next((col for col in monitor_df.columns if '代號' in str(col)), None)
-                    
-                    for _, row in monitor_df.iterrows():
-                        name = str(row[name_col]).strip()
-                        raw_id = str(row[id_col]).strip() if id_col and pd.notna(row[id_col]) else ""
-                        s_id = clean_stock_id(raw_id)
-                        if not s_id:
-                            match = re.search(r'\((\d+)\)', name)
-                            s_id = match.group(1) if match else ""
-                        if not name or name == 'nan': continue
-                            
-                        df = self.repo.get_history(s_id, name)
-                        if df.empty: continue
-                            
-                        latest = df.iloc[-1]
-                        current_price = latest['Close']
-                        
-                        target_price = np.nan
-                        status_str = "觀察中"
-                        if '買進目標價' in monitor_df.columns and pd.notna(row['買進目標價']):
-                            target_price = float(row['買進目標價'])
-                            diff_pct = ((current_price - target_price) / target_price) * 100
-                            if current_price <= target_price:
-                                structured_alerts.append({
-                                    'icon': '🎯', 'type': '監控買進提示', 'name': name,
-                                    'close': f"{current_price:.2f}",
-                                    'line2': f"買進目標價: {target_price:.2f}",
-                                    'desc': "已達大波段安全安全邊際，建議分批佈局。"
-                                })
-                                status_str = "🎯 已達買點"
-                            else:
-                                status_str = f"溢價 {diff_pct:.1f}%"
-
-                        k_val, d_val, osc_val = np.nan, np.nan, np.nan
-                        if len(df) >= 9:
-                            df_idx = MarketIndicatorService.calculate_kd9(df)
-                            _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
-                            latest_idx = df_idx.iloc[-1]
-                            k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
-                            
-                        stock_res = {
-                            'name': name, 'id': s_id, 'type': '監控股', 'close': current_price,
-                            'k': k_val, 'd': d_val, 'osc': osc_val,
-                            'target_or_cost': f"目標: {target_price:.2f}" if pd.notna(target_price) else "-",
-                            'status': status_str
-                        }
-                        all_stocks_output.append(stock_res)
-                        global_stock_pool[name] = stock_res
-            except Exception as e: logger.error(f"解析監控 Excel 失敗: {e}")
-
-        # 2. 處理現有庫存移動停利與智慧停損
+        # 1. 處理現有庫存移動停利與智慧停損
         if INVENTORY_FILE.exists():
             try:
                 inv_df = pd.read_excel(INVENTORY_FILE)
@@ -512,12 +457,8 @@ class StrategyOrchestrator:
                             'target_or_cost': f"成本: {avg_cost:.2f}",
                             'status': status_str
                         }
-                        
-                        if name in global_stock_pool:
-                            idx_to_update = next(i for i, x in enumerate(all_stocks_output) if x['name'] == name)
-                            all_stocks_output[idx_to_update] = stock_res
-                        else:
-                            all_stocks_output.append(stock_res)
+                        all_stocks_output.append(stock_res)
+                        global_stock_pool[name] = stock_res
                         
                         for _, row in group.iterrows():
                             row_copy = row.copy()
@@ -529,6 +470,69 @@ class StrategyOrchestrator:
                     if updated_rows:
                         pd.DataFrame(updated_rows).to_excel(INVENTORY_FILE, index=False)
             except Exception as e: logger.error(f"庫存智慧風控計算失敗: {e}")
+
+        # 2. 處理觀察/監控名單
+        if MONITOR_FILE.exists():
+            try:
+                monitor_df = pd.read_excel(MONITOR_FILE)
+                if monitor_df.empty or len(monitor_df.columns) == 0:
+                    logger.warning("⚠️ 監控股票.xlsx 內容為空。")
+                else:
+                    name_col = next((col for col in monitor_df.columns if '名稱' in str(col)), monitor_df.columns[0])
+                    id_col = next((col for col in monitor_df.columns if '代號' in str(col)), None)
+                    
+                    for _, row in monitor_df.iterrows():
+                        name = str(row[name_col]).strip()
+                        raw_id = str(row[id_col]).strip() if id_col and pd.notna(row[id_col]) else ""
+                        s_id = clean_stock_id(raw_id)
+                        if not s_id:
+                            match = re.search(r'\((\d+)\)', name)
+                            s_id = match.group(1) if match else ""
+                        if not name or name == 'nan': continue
+                        
+                        # 🟢 修正核心 2：防禦性降級攔截鎖。如果偵測到此代號其實在核心庫存白名單內，且剛才庫存讀取失敗，
+                        # 則直接將其完全跳過，絕對不允許它被當作監控股誤判輸出！
+                        if s_id in core_inventory_symbols and name not in global_stock_pool:
+                            logger.info(f"🛡️ [防禦性攔截] 偵測到庫存核心資產 {name}({s_id}) 被錯誤落入監控流程，已自動攔截隔離。")
+                            continue
+                            
+                        df = self.repo.get_history(s_id, name)
+                        if df.empty: continue
+                            
+                        latest = df.iloc[-1]
+                        current_price = latest['Close']
+                        
+                        target_price = np.nan
+                        status_str = "觀察中"
+                        if '買進目標價' in monitor_df.columns and pd.notna(row['買進目標價']):
+                            target_price = float(row['買進目標價'])
+                            diff_pct = ((current_price - target_price) / target_price) * 100
+                            if current_price <= target_price:
+                                structured_alerts.append({
+                                    'icon': '🎯', 'type': '監控買進提示', 'name': name,
+                                    'close': f"{current_price:.2f}",
+                                    'line2': f"買進目標價: {target_price:.2f}",
+                                    'desc': "已達大波段安全安全邊際，建議分批佈局。"
+                                })
+                                status_str = "🎯 已達買點"
+                            else:
+                                status_str = f"溢價 {diff_pct:.1f}%"
+
+                        k_val, d_val, osc_val = np.nan, np.nan, np.nan
+                        if len(df) >= 9:
+                            df_idx = MarketIndicatorService.calculate_kd9(df)
+                            _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
+                            latest_idx = df_idx.iloc[-1]
+                            k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
+                            
+                        stock_res = {
+                            'name': name, 'id': s_id, 'type': '監控股', 'close': current_price,
+                            'k': k_val, 'd': d_val, 'osc': osc_val,
+                            'target_or_cost': f"目標: {target_price:.2f}" if pd.notna(target_price) else "-",
+                            'status': status_str
+                        }
+                        all_stocks_output.append(stock_res)
+            except Exception as e: logger.error(f"解析監控 Excel 失敗: {e}")
 
         # 3. 發送通知
         self.notifier.send_line(structured_alerts, self.repo.report_date)

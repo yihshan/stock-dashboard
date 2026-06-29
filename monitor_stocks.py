@@ -390,9 +390,9 @@ class NotificationService:
             
         html = (
             f"<html><body style=\"font-family: 'Microsoft JhengHei', sans-serif; padding: 20px;\">"
-            f"<h2 style=\"color: #1a365d;\">📊 每日台股策略監控與技術指標自動彙整</h2>"
-            f"{dividend_table_html}"  
+            f"<h2 style=\"color: #1a365d;\">📊 每日台股策略監控與技術指標自動彙整</h2>"  
             f"<p style='color: #4a5568;'><b>數據基準日：</b>{report_date}</p>"
+            f"{dividend_table_html}"
             f"<p style='background-color: #edf2f7; padding: 10px; border-radius: 4px; color: #4a5568;'>🌐 <b>總體環境監測：</b>{market_text}</p>"
             f"{alert_html}"  
             f"<hr style='border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0;'>"

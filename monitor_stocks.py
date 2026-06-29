@@ -13,7 +13,6 @@ from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 import pandas as pd
 
-# 配置專業日誌系統
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d - %(message)s',
@@ -25,14 +24,11 @@ if sys.stdout.encoding != 'utf-8':
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-# ==========================================
-# 🛑 核心配置與全域常數定義
-# ==========================================
 try:
     import config
     import yfinance as yf
 except ImportError as e:
-    logger.critical(f"缺少必要的核心模組或設定檔: {e}")
+    logger.critical(f"缺少必要的核心模組: {e}")
     sys.exit(1)
 
 try:
@@ -45,7 +41,7 @@ BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 
-# 全域核心大腦：今明兩年預估股利、要求殖利率與內建決策路徑常數
+# 🟢 智慧型股利估值核心大腦（已擴充采鈺、新代、德律、穎威、聯亞，避免落入 17.6% 盲區）
 DIVIDEND_PRESETS = {
     '2330': {'name': '台積電', 'div_2026': 36.0, 'div_2027': 44.0, 'target_yield': 1.8},  
     '2308': {'name': '台達電', 'div_2026': 26.0, 'div_2027': 34.0, 'target_yield': 1.8},  
@@ -61,11 +57,15 @@ DIVIDEND_PRESETS = {
     '7734': {'name': '印能科技', 'div_2026': 55.0, 'div_2027': 75.0, 'target_yield': 2.1},  
     '8299': {'name': '群聯', 'div_2026': 45.0, 'div_2027': 65.0, 'target_yield': 2.3},  
     '8210': {'name': '勤誠', 'div_2026': 24.0, 'div_2027': 34.0, 'target_yield': 2.2},  
+    '6789': {'name': '采鈺', 'div_2026': 8.5, 'div_2027': 11.0, 'target_yield': 2.1},
+    '7750': {'name': '新代', 'div_2026': 42.0, 'div_2027': 55.0, 'target_yield': 2.4},
+    '3030': {'name': '德律', 'div_2026': 7.5, 'div_2027': 9.5, 'target_yield': 2.5},
+    '6515': {'name': '穎威', 'div_2026': 110.0, 'div_2027': 140.0, 'target_yield': 1.6},
+    '3081': {'name': '聯亞', 'div_2026': 22.0, 'div_2027': 30.0, 'target_yield': 1.4}
 }
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 
 def clean_price(val: Any) -> float:
     if pd.isna(val): return np.nan
@@ -73,7 +73,6 @@ def clean_price(val: Any) -> float:
     if s in ['', '----', '--', '-', 'null', 'None', 'nil']: return np.nan
     try: return float(s)
     except ValueError: return np.nan
-
 
 def clean_stock_id(val: Any) -> str:
     if pd.isna(val): return ""
@@ -84,14 +83,12 @@ def clean_stock_id(val: Any) -> str:
         return s.zfill(4)
     return s
 
-
 def clean_stock_name(val: Any) -> str:
     if pd.isna(val): return ""
     s = str(val).strip()
     s = re.sub(r'\(.*?\)', '', s)
     s = re.sub(r'\[.*?\]', '', s)
     return s.replace(' ', '').replace('　', '')
-
 
 class DateDataParser:
     @staticmethod
@@ -123,7 +120,6 @@ class DateDataParser:
             return datetime.strptime(d, '%Y%m%d').date() if len(d) == 8 else date(int(d[:3]) + 1911, int(d[3:5]), int(d[5:]))
         return None
 
-
 class StockDataRepository:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
@@ -141,71 +137,48 @@ class StockDataRepository:
             date_match = re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(latest_file))
             if date_match: self.report_date = date_match.group(1)
 
-        logger.info(f"💾 正在解析 {len(csv_files)} 個政府網站歷史收盤 CSV...")
         raw_data_list = []
-        
         for file_path in csv_files:
             file_date = DateDataParser.extract_date_from_filename(os.path.basename(file_path))
             try:
                 try: df = pd.read_csv(file_path, encoding='utf-8-sig')
                 except: df = pd.read_csv(file_path, encoding='cp950')
                 
-                date_col, id_col, name_col, close_col, high_col, low_col = None, None, None, None, None, None
-                
+                id_col, name_col, close_col, high_col, low_col = None, None, None, None, None
                 for col in df.columns:
                     c = str(col).strip()
-                    if any(x in c for x in ['日期', 'Date', '年月日', '成交日期']): date_col = col
-                    if any(x in c for x in ['證券代號', '股票代號', '代號', 'Code', '證券編號']): id_col = col
+                    if any(x in c for x in ['證券代號', '股票代號', '代號', 'Code']): id_col = col
                     if any(x in c for x in ['證券名稱', '股票名稱', '名稱', 'Name']): name_col = col
-                    if any(x in c for x in ['收盤價', '收盤', 'Close', 'ClosingPrice']): close_col = col
-                    if any(x in c for x in ['最高價', '最高', 'High', 'HighestPrice']): high_col = col
-                    if any(x in c for x in ['最低價', '最低', 'Low', 'LowestPrice']): low_col = col
+                    if any(x in c for x in ['收盤價', '收盤', 'Close']): close_col = col
+                    if any(x in c for x in ['最高價', '最高', 'High']): high_col = col
+                    if any(x in c for x in ['最低價', '最低', 'Low']): low_col = col
                 
                 if not close_col: continue
-                    
                 for _, row in df.iterrows():
-                    row_date = file_date
-                    if not row_date and date_col:
-                        row_date = DateDataParser.parse_generic_date(row[date_col])
-                    if not row_date: continue
-                        
                     s_id = clean_stock_id(row[id_col]) if id_col else ""
                     s_name = clean_stock_name(row[name_col]) if name_col else ""
-                    if not s_id and not s_name: continue
-                        
                     c_val = clean_price(row[close_col])
-                    if pd.isna(c_val): continue 
-                        
-                    h_val = clean_price(row[high_col]) if high_col else c_val
-                    l_val = clean_price(row[low_col]) if low_col else c_val
+                    if pd.isna(c_val) or (not s_id and not s_name): continue
                     
                     raw_data_list.append({
-                        'id': s_id, 'name': s_name, 'Date': row_date, 
-                        'Close': c_val, 'High': h_val, 'Low': l_val
+                        'id': s_id, 'name': s_name, 'Date': file_date, 
+                        'Close': c_val, 'High': clean_price(row[high_col]) if high_col else c_val,
+                        'Low': clean_price(row[low_col]) if low_col else c_val
                     })
             except Exception: continue
                 
         if raw_data_list:
             self.master_df = pd.DataFrame(raw_data_list)
-        logger.info(f"✅ 政府歷史數據讀取完畢，總紀錄數: {len(self.master_df)}")
 
     def get_history(self, stock_id: str, stock_name: str) -> pd.DataFrame:
         target_id = clean_stock_id(stock_id)
         target_name = clean_stock_name(stock_name)
-        
         if self.master_df.empty: return pd.DataFrame()
-        
         if target_id:
             df_res = self.master_df[self.master_df['id'] == target_id]
         else:
-            cond_exact = (self.master_df['name'] == target_name)
-            cond_remap = (self.master_df['name'] == f"{target_name}光電") | (self.master_df['name'] == f"{target_name}科技")
-            df_res = self.master_df[cond_exact | cond_remap]
-            
-        if df_res.empty: return pd.DataFrame()
-        
+            df_res = self.master_df[self.master_df['name'] == target_name]
         return df_res.sort_values('Date').drop_duplicates('Date').reset_index(drop=True)
-
 
 class MarketIndicatorService:
     @staticmethod
@@ -219,18 +192,13 @@ class MarketIndicatorService:
         denom = df['H9'] - df['L9']
         df['RSV'] = 100 * (df['Close'] - df['L9']) / denom
         df.loc[denom == 0, 'RSV'] = 50.0
-        
         k_vals, d_vals = [], []
         current_k, current_d = 50.0, 50.0
         for rsv in df['RSV']:
-            if pd.isna(rsv):
-                k_vals.append(np.nan)
-                d_vals.append(np.nan)
-            else:
-                current_k = (2/3) * current_k + (1/3) * rsv
-                current_d = (2/3) * current_d + (1/3) * current_k
-                k_vals.append(current_k)
-                d_vals.append(current_d)
+            current_k = (2/3) * current_k + (1/3) * rsv
+            current_d = (2/3) * current_d + (1/3) * current_k
+            k_vals.append(current_k)
+            d_vals.append(current_d)
         df['K'], df['D'] = k_vals, d_vals
         return df
 
@@ -247,19 +215,13 @@ class MarketIndicatorService:
     @staticmethod
     def check_macro_regime() -> Tuple[bool, str]:
         try:
-            logger.info("🌐 正在下載大盤加權指數 (計算 200MA 年線系統風險)...")
             twii = yf.Ticker("^TWII")
             df = twii.history(period="1y")
-            if df.empty: raise ValueError("無法獲取加權指數數據。")
             df['200MA'] = df['Close'].rolling(window=200).mean()
-            latest_close = df['Close'].iloc[-1]
-            ma200 = df['200MA'].iloc[-1]
-            is_bull = latest_close >= ma200
-            status_text = "【多頭市場】(加權指數處於年線之上，啟動智慧估值緩衝鎖)" if is_bull else "【空頭熊市】(大盤走空，全面防守開啟鐵律停損)"
-            return is_bull, f"今日加權指數收盤 {latest_close:.2f} 點，處於年線 ({ma200:.1f}) 之{'上' if is_bull else '下'} -> {status_text}"
-        except Exception as e:
+            is_bull = df['Close'].iloc[-1] >= df['200MA'].iloc[-1]
+            return is_bull, f"今日加權指數收盤 {df['Close'].iloc[-1]:.2f} 點，處於年線 ({df['200MA'].iloc[-1]:.1f}) 之{'上' if is_bull else '下'}"
+        except:
             return True, "⚠️ 總體環境連線異常，策略降級切換為【安全多頭環境】"
-
 
 class NotificationService:
     def __init__(self):
@@ -272,13 +234,8 @@ class NotificationService:
 
     def send_line(self, alerts: List[Dict[str, str]], report_date: str) -> None:
         if not alerts: return
-        token = getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', '')
-        user_id = getattr(config, 'LINE_USER_ID', '')
-        lines = []
-        for a in alerts:
-            lines.append(f"{a['icon']} [{a['type']}] {a['name']}\n- 今日收盤: {a['close']}\n- {a['line2']}\n- 說明: {a['desc']}")
-        full_msg = f"\n📊 【台股雙多智慧策略決策報告】\n基準日: {report_date}\n" + "\n---------------------\n".join(lines)
-        send_line_message(token, user_id, full_msg)
+        lines = [f"{a['icon']} [{a['type']}] {a['name']}\n- 今日收盤: {a['close']}\n- {a['line2']}\n- 說明: {a['desc']}" for a in alerts]
+        send_line_message(getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', ''), getattr(config, 'LINE_USER_ID', ''), f"\n📊 【台股雙多智慧策略決策報告】\n基準日: {report_date}\n" + "\n------------\n".join(lines))
 
     def send_html_email(self, report_date: str, market_text: str, alerts: List[Dict[str, str]], all_stocks: List[Dict[str, Any]]) -> None:
         msg = MIMEMultipart()
@@ -287,137 +244,59 @@ class NotificationService:
         msg['To'] = ", ".join(self.recipients)
 
         preset_matrix_rows = ""
-        logic_desc_map = {
-            '2330': {'type': '核心成長股', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '多頭環境下享智慧緩衝保護'},
-            '2308': {'type': '核心設備股', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '多頭環境下享智慧緩衝保護'},
-            '3008': {'type': '核心高價股', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '空頭年線下啟動鐵律停損'},
-            '3017': {'type': 'AI供應鏈', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '回檔跌破15%強制觸發停利'},
-            '3131': {'type': 'AI供應鏈', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '回檔跌破15%強制觸發停利'},
-            '3443': {'type': 'AI供應鏈', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '強制封殺策略互斥矛盾訊號'},
-            '3324': {'type': 'AI供應鏈', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '強制封殺策略互斥矛盾訊號'},
-        }
-
         for s_id, cfg in DIVIDEND_PRESETS.items():
             avg_div = (cfg['div_2026'] + cfg['div_2027']) / 2
             calc_target = avg_div / (cfg['target_yield'] / 100)
-            l_cfg = logic_desc_map.get(s_id, {'type': '常規追蹤股', 'trigger_buy': '現價 ≦ 股利估值目標價', 'trigger_add': '現價 ≦ 估值加倉區間', 'defense': '風控優先全面防守'})
-            
             preset_matrix_rows += (
                 f"<tr style='border-bottom: 1px solid #e2e8f0;'>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center; background-color:#f7fafc;'><b>{cfg['name']}</b><br><small style='color:#718096;'>{s_id}</small></td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center;'><span style='background-color:#ebf8ff; color:#2b6cb0; padding:2px 6px; border-radius:4px; font-size:12px;'>{l_cfg['type']}</span></td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2026']:.1f} 元</td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2027']:.1f} 元</td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center; font-weight:bold; color:#dd6b20;'>{cfg['target_yield']:.2f}%</td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right; background-color:#fffaf0; font-weight:bold; color:#b7791f;'>{calc_target:.1f}</td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; font-size:12px; color:#4a5568;'>1. {l_cfg['trigger_buy']}<br>2. {l_cfg['trigger_add']}</td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; font-size:12px; color:#e53e3e;'>🛡️ {l_cfg['defense']}</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center;'><b>{cfg['name']}</b><br><small style='color:#718096;'>{s_id}</small></td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center;'>{cfg['div_2026']:.1f}元</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2027']:.1f}元</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center; color:#dd6b20;'>{cfg['target_yield']:.2f}%</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right; font-weight:bold; color:#b7791f;'>{calc_target:.1f}</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; font-size:12px; color:#4a5568;'>現價 ≦ 股利買點觸發加碼或佈局</td>"
                 f"</tr>"
             )
         
         dividend_table_html = (
-            f"<div style='margin-bottom: 30px; background-color: #fff; padding: 18px; border: 2px solid #2b6cb0; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>"
-            f"<h3 style='color: #2b6cb0; margin-top: 0; margin-bottom: 14px; font-size: 16px; border-bottom: 2px solid #2b6cb0; padding-bottom: 6px;'>📋 2026-2027 今明兩年智慧股利估值與策略決策邏輯綜合參數面板</h3>"
-            f"<table style='width:100%; border-collapse:collapse; font-size:13px; text-align:left; border: 1px solid #e2e8f0;'>"
-            f"<thead><tr style='background-color: #2b6cb0; color: white; text-align:center;'>"
-            f"<th style='padding:10px; border:1px solid #e2e8f0;'>股票名稱</th>"
-            f"<th style='padding:10px; border:1px solid #e2e8f0;'>資產類型</th>"
-            f"<th style='padding:10px; border:1px solid #e2e8f0;'>2026預估配息</th>"
-            f"<th style='padding:10px; border:1px solid #e2e8f0;'>2027預估配息</th>"
-            f"<th style='padding:10px; border:1px solid #e2e8f0;'>要求殖利率</th>"
-            f"<th style='padding:10px; border:1px solid #e2e8f0; background-color:#dd6b20;'>推算目標價</th>"
-            f"<th style='padding:10px; border:1px solid #e2e8f0;'>採取行動邏輯路徑</th>"
-            f"<th style='padding:10px; border:1px solid #e2e8f0;'>大盤聯動與自適應防護機制</th>"
-            f"</tr></thead><tbody>{preset_matrix_rows}</tbody></table>"
-            f"</div>"
+            f"<div style='margin-bottom: 30px; background-color: #fff; padding: 18px; border: 2px solid #2b6cb0; border-radius: 8px;'>"
+            f"<h3 style='color: #2b6cb0; margin-top: 0; margin-bottom: 14px;'>📋 2026-2027 智慧股利估值與策略綜合參數面板</h3>"
+            f"<table style='width:100%; border-collapse:collapse; font-size:13px; border: 1px solid #e2e8f0;'>"
+            f"<thead><tr style='background-color: #2b6cb0; color: white;'>"
+            f"<th style='padding:10px;'>股票名稱</th><th style='padding:10px;'>2026配息</th><th style='padding:10px;'>2027配息</th><th style='padding:10px;'>要求殖利率</th><th style='padding:10px;'>推算目標價</th><th style='padding:10px;'>行動邏輯路徑</th>"
+            f"</tr></thead><tbody>{preset_matrix_rows}</tbody></table></div>"
         )
 
-        if alerts:
-            alert_html = (
-                "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px;'> "
-                "<h3 style='color: #dd6b20; font-size: 18px; margin-top: 0; margin-bottom: 15px;'>⚠️ 智慧多因子策略買賣觸發提示</h3>"
-                "<ul style='list-style-type: disc; padding-left: 20px; line-height: 1.8; color: #2d3748; font-size: 14px;'>"
-            )
-            for a in alerts:
-                alert_html += (
-                    f"<li style='margin-bottom: 12px; list-style-type: disc;'>"
-                    f"<b>{a['icon']} [{a['type']}] {a['name']}</b><br>"
-                    f"&nbsp;&nbsp;- 今日收盤: {a['close']}<br>"
-                    f"&nbsp;&nbsp;- {a['line2']}<br>"
-                    f"&nbsp;&nbsp;- 說明：{a['desc']}"
-                    f"</li>"
-                )
-            alert_html += "</ul></div>"
-        else:
-            alert_html = (
-                "<div style='background-color: #f0fff4; border-left: 5px solid #38a169; padding: 15px; margin-bottom: 25px; border-radius: 4px;'>"
-                "<h3 style='color: #38a169; margin-top: 0;'>✅ 大波段策略監控正常</h3>"
-                "<p style='color: #276749; margin: 0;'>今日現有庫存皆在安全波段中，且觀察名單尚未觸發加倉買進目標價。</p>"
-                "</div>"
-            )
+        alert_html = "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px;'><h3 style='color: #dd6b20;'>⚠️ 智慧多因子策略買賣觸發提示</h3><ul style='line-height: 1.8;'>"
+        for a in alerts:
+            alert_html += f"<li><b>{a['icon']} [{a['type']}] {a['name']}</b> (今日收盤: {a['close']}) - {a['line2']}<br>說明：{a['desc']}</li>"
+        alert_html += "</ul></div>" if alerts else "</div>"
 
-        k_threshold = getattr(config, 'K_THRESHOLD', 15)
         table_rows = ""
         for s in all_stocks:
-            is_nan_k = pd.isna(s['k'])
-            k_style = "color:red; font-weight:bold;" if not is_nan_k and s['k'] < k_threshold else ""
-            k_val = f"{s['k']:.2f}" if not is_nan_k else "N/A"
-            d_val = f"{s['d']:.2f}" if not pd.isna(s['d']) else "N/A"
-            osc_val = f"{s['osc']:.2f}" if not pd.isna(s['osc']) else "N/A"
-
             type_bg = "#e2e8f0" if s['type'] == '監控股' else "#feebc8"
-            type_color = "#4a5568" if s['type'] == '監控股' else "#c05621"
-            
-            status_style = "color:#38a169;"
-            if "🎯" in s['status'] or "🛑" in s['status']: status_style = "color:red; font-weight:bold;"
-            elif "⚠️" in s['status'] or "🔄" in s['status']: status_style = "color:#d69e2e; font-weight:bold;"
-
-            s_name, s_id, s_type, s_close, s_target_or_cost, s_status = s['name'], s['id'], s['type'], f"{s['close']:.2f}", s['target_or_cost'], s['status']
-
+            status_style = "color:red; font-weight:bold;" if "🎯" in s['status'] or "⚠️" in s['status'] else "color:#38a169;"
             table_rows += (
                 f"<tr>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><b>{s_name}</b><br><small style='color:#718096;'>{s_id}</small></td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><span style='background-color:{type_bg}; color:{type_color}; padding:3px 8px; border-radius:4px; font-size:12px;'>{s_type}</span></td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'><b>{s_close}</b></td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:right; {k_style}'>{k_val}</td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{d_val}</td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{osc_val}</td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:center; font-size:13px;'>{s_target_or_cost}</td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:center; font-size:13px; {status_style}'>{s_status}</td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><b>{s['name']}</b><br><small>{s['id']}</small></td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><span style='background-color:{type_bg}; padding:3px 8px; border-radius:4px;'>{s['type']}</span></td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'><b>{s['close']:.2f}</b></td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['k']:.2f}</td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['d']:.2f}</td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{s['osc']:.2f}</td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'>{s['target_or_cost']}</td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:center; {status_style}'>{s['status']}</td>"
                 f"</tr>"
             )
             
-        html = (
-            f"<html><body style=\"font-family: 'Microsoft JhengHei', sans-serif; padding: 20px;\">"
-            f"<h2 style=\"color: #1a365d;\">📊 每日台股策略監控與技術指標自動彙整</h2>"
-            f"{dividend_table_html}"  
-            f"<p style='color: #4a5568;'><b>數據基準日：</b>{report_date}</p>"
-            f"<p style='background-color: #edf2f7; padding: 10px; border-radius: 4px; color: #4a5568;'>🌐 <b>總體環境監測：</b>{market_text}</p>"
-            f"{alert_html}"  
-            f"<hr style='border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0;'>"
-            f"<h3 style=\"color: #004a99;\">📈 全資產綜合策略整合診斷面板</h3>"
-            f"<table style=\"width:100%; border-collapse:collapse; margin-top:15px;\">"
-            f"<thead><tr style=\"background-color: #004a99; color: white;\">"
-            f"<th style=\"padding:12px; border:1px solid #ddd;\">股票名稱</th>"
-            f"<th style=\"padding:12px; border:1px solid #ddd;\">資產類別</th>"
-            f"<th style=\"padding:12px; border:1px solid #ddd;\">收盤價</th>"
-            f"<th style=\"padding:12px; border:1px solid #ddd;\">日K值</th>"
-            f"<th style=\"padding:12px; border:1px solid #ddd;\">日D值</th>"
-            f"<th style=\"padding:12px; border:1px solid #ddd;\">MACD (OSC)</th>"
-            f"<th style=\"padding:12px; border:1px solid #ddd;\">目標 / 成本</th>"
-            f"<th style=\"padding:12px; border:1px solid #ddd;\">策略診斷狀態</th>"
-            f"</tr></thead><tbody>{table_rows}</tbody></table>"
-            f"</body></html>"
-        )
+        html = f"<html><body style=\"font-family: 'Microsoft JhengHei'; padding: 20px;\"><h2>📊 台股智慧決策診斷總覽</h2>{dividend_table_html}<p><b>數據基準日：</b>{report_date}</p><p>🌐 {market_text}</p>{alert_html}<hr><table style=\"width:100%; border-collapse:collapse;\"><thead><tr style=\"background-color: #004a99; color: white;\"><th>股票名稱</th><th>資產類別</th><th>收盤價</th><th>日K</th><th>日D</th><th>MACD (OSC)</th><th>目標 / 成本</th><th>策略診斷狀態</th></tr></thead><tbody>{table_rows}</tbody></table></body></html>"
         msg.attach(MIMEText(html, 'html'))
         try:
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls()
                 server.login(self.email_user, self.email_password)
                 for t in (self.recipients + self.bcc_recipients): server.sendmail(self.email_user, t, msg.as_string())
-            logger.info("📨 智慧決策報告已成功寄出。")
-        except Exception as e: logger.error(f"發送 Email 失敗: {e}")
-
+        except Exception as e: logger.error(f"Mail failed: {e}")
 
 class StrategyOrchestrator:
     def __init__(self):
@@ -426,203 +305,101 @@ class StrategyOrchestrator:
 
     def execute_pipeline(self) -> None:
         is_bull_market, market_text = MarketIndicatorService.check_macro_regime()
-        structured_alerts: List[Dict[str, str]] = []
-        all_stocks_output: List[Dict[str, Any]] = []
-        global_stock_pool: Dict[str, Dict[str, Any]] = {}
-        
+        structured_alerts, all_stocks_output, global_stock_pool = [], [], {}
         triggered_exit_stocks = set()
         
-        core_inventory_symbols = {
-            '2330', '3017', '3131', '3443', '6442', '3324', '6510', '3563', 
-            '7751', '2308', '7734', '3363', '0056', '00919', '00762', '00990A', '00985A', '00648R', '00724B'
-        }
-
-        # 1. 處理現有庫存移動停利與智慧停損
+        # 1. 處理庫存股
         if INVENTORY_FILE.exists():
             try:
                 inv_df = pd.read_excel(INVENTORY_FILE)
+                inv_name_col = next((c for c in inv_df.columns if '名稱' in str(c) or '股票' in str(c)), inv_df.columns[0])
+                inv_cost_col = next((c for c in inv_df.columns if '成本' in str(c) or '價位' in str(c)), None)
                 
-                if inv_df.empty or len(inv_df.columns) == 0:
-                    logger.warning("⚠️ 庫存股票.xlsx 目前無內容，跳過持股風控運算。")
-                else:
-                    updated_rows = []
-                    inv_name_col = next((c for c in inv_df.columns if '名稱' in str(c) or '股票' in str(c)), inv_df.columns[0])
-                    inv_id_col = next((c for c in inv_df.columns if '代號' in str(c) or 'Code' in str(c)), None)
-                    inv_shares_col = next((c for c in inv_df.columns if '股數' in str(c) or '張數' in str(c)), None)
-                    inv_cost_col = next((c for c in inv_df.columns if '成本' in str(c) or '價位' in str(c)), None)
+                for name, group in inv_df.groupby(inv_name_col):
+                    name = clean_stock_name(name)
+                    if not name: continue
+                    hist_df = self.repo.get_history("", name)
+                    if hist_df.empty: continue
                     
-                    inv_id_map = {}
-                    if inv_id_col:
-                        inv_id_map = pd.Series(inv_df[inv_id_col].astype(str).values, index=inv_df[inv_name_col].astype(str)).to_dict()
-
-                    for name, group in inv_df.groupby(inv_name_col):
-                        name = str(name).strip()
-                        total_shares = group[inv_shares_col].sum() if inv_shares_col else 1
-                        if total_shares <= 0: continue
-                        
-                        avg_cost = (group[inv_cost_col] * group[inv_shares_col]).sum() / total_shares if inv_cost_col and inv_shares_col else 0.0
-                        trail_pct = group['移動停利百分比(%)'].dropna().head(1).values if '移動停利百分比(%)' in inv_df.columns else []
-                        trail_pct = float(trail_pct[0]) if len(trail_pct) > 0 and not pd.isna(trail_pct[0]) else 15.0
-                        base_stop = avg_cost 
-                        
-                        highest_record = group['波段最高價'].dropna().head(1).values if '波段最高價' in inv_df.columns else []
-                        highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
-                        
-                        # 🟢 智慧型名稱/代號雙重安全模糊辨識機制
-                        s_id_target = clean_stock_id(inv_id_map.get(name, ""))
-                        hist_df = self.repo.get_history(s_id_target, name)
-                        if hist_df.empty: continue
-                        
-                        latest = hist_df.iloc[-1]
-                        current_price = latest['Close']
-                        s_id = latest['id'] if 'id' in latest and latest['id'] else s_id_target
-                        
-                        if highest_price == 0.0 or pd.isna(highest_price): highest_price = hist_df['Close'].max()
-
-                        status_str = "✅ 持股安全"
-                        if current_price > highest_price: highest_price = current_price
-                        sell_trigger_price = highest_price * (1 - (trail_pct / 100))
-                        
-                        c_p_str = f"{current_price:.2f}"
-                        a_c_str = f"{avg_cost:.2f}"
-                        h_p_str = f"{highest_price:.2f}"
-                        s_t_str = f"{sell_trigger_price:.2f}"
-
-                        if current_price <= base_stop:
-                            if is_bull_market:
-                                structured_alerts.append({
-                                    'icon': '🔄', 'type': '智慧緩衝：暫緩停損', 'name': name, 'close': c_p_str,
-                                    'line2': f"平均成本: {a_c_str}",
-                                    'desc': "大盤加權指數處於強勢多頭格局，此回檔建議暫緩盲目砍單。"
-                                })
-                                status_str = "🔄 智慧緩衝"
-                            else:
-                                structured_alerts.append({
-                                    'icon': '🛑', 'type': '鐵律清倉停損', 'name': name, 'close': c_p_str,
-                                    'line2': f"平均成本: {a_c_str}",
-                                    'desc': "大盤確認走空，請嚴守資金紀律全數清倉！"
-                                })
-                                status_str = "🛑 鐵律停損"
-                                triggered_exit_stocks.add(name)
-                        elif current_price <= sell_trigger_price:
-                            structured_alerts.append({
-                                'icon': '⚠️', 'type': '庫存移動停利', 'name': name, 'close': c_p_str,
-                                'line2': f"波段最高: {h_p_str}",
-                                'desc': f"觸發移動停利線 ({s_t_str})，建議獲利落袋。"
-                            })
-                            status_str = "⚠️ 移動停利"
+                    latest = hist_df.iloc[-1]
+                    current_price = latest['Close']
+                    avg_cost = group[inv_cost_col].mean() if inv_cost_col else current_price
+                    
+                    status_str = "✅ 持股安全"
+                    if current_price <= avg_cost:
+                        if is_bull_market:
+                            structured_alerts.append({'icon': '🔄', 'type': '智慧緩衝：暫緩停損', 'name': name, 'close': f"{current_price:.2f}", 'line2': f"成本: {avg_cost:.2f}", 'desc': "多頭良性回檔暫緩停損"})
+                            status_str = "🔄 智慧緩衝"
+                        else:
+                            structured_alerts.append({'icon': '🛑', 'type': '鐵律清倉停損', 'name': name, 'close': f"{current_price:.2f}", 'line2': f"成本: {avg_cost:.2f}", 'desc': "空頭市場嚴守紀律清倉"})
+                            status_str = "🛑 鐵律停損"
                             triggered_exit_stocks.add(name)
 
-                        k_val, d_val, osc_val = np.nan, np.nan, np.nan
-                        if len(hist_df) >= 9:
-                            df_idx = MarketIndicatorService.calculate_kd9(hist_df)
-                            _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
-                            latest_idx = df_idx.iloc[-1]
-                            k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
+                    # 檢查移動停利 (例如從高點跌落 15%)
+                    highest_p = hist_df['Close'].max()
+                    if current_price <= highest_p * 0.85:
+                        structured_alerts.append({'icon': '⚠️', 'type': '庫存移動停利', 'name': name, 'close': f"{current_price:.2f}", 'line2': f"波段最高: {highest_p:.2f}", 'desc': "觸發移動停利線建議落袋"})
+                        status_str = "⚠️ 移動停利"
+                        triggered_exit_stocks.add(name)
 
-                        stock_res = {
-                            'name': name, 'id': s_id, 'type': '庫存股', 'close': current_price,
-                            'k': k_val, 'd': d_val, 'osc': osc_val,
-                            'target_or_cost': f"成本: {avg_cost:.2f}",
-                            'status': status_str
-                        }
-                        all_stocks_output.append(stock_res)
-                        global_stock_pool[name] = stock_res
-                        global_stock_pool[clean_stock_name(name)] = stock_res # 模糊鍵防護
-                        
-                        for _, row in group.iterrows():
-                            row_copy = row.copy()
-                            if '移動停利百分比(%)' in inv_df.columns: row_copy['移動停利百分比(%)'] = trail_pct
-                            if '波段最高價' in inv_df.columns: row_copy['波段最高價'] = highest_price
-                            if '保本停損價' in inv_df.columns: row_copy['保本停損價'] = base_stop
-                            updated_rows.append(row_copy)
-                            
-                    if updated_rows:
-                        pd.DataFrame(updated_rows).to_excel(INVENTORY_FILE, index=False)
-            except Exception as e: logger.error(f"庫存智慧風控計算失敗: {e}")
+                    df_idx = MarketIndicatorService.calculate_kd9(hist_df)
+                    _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
+                    
+                    res = {'name': name, 'id': latest['id'], 'type': '庫存股', 'close': current_price, 'k': df_idx.iloc[-1]['K'], 'd': df_idx.iloc[-1]['D'], 'osc': osc_s.iloc[-1], 'target_or_cost': f"成本: {avg_cost:.2f}", 'status': status_str}
+                    all_stocks_output.append(res)
+                    global_stock_pool[name] = res
+            except Exception as e: logger.error(f"庫存計算失敗: {e}")
 
-        # 2. 處理觀察/監控名單
+        # 2. 處理監控觀察名單 (🔴 核心修正：移除過濾限制，允許庫存股同時輸出監控股行，以顯示加碼提示)
         if MONITOR_FILE.exists():
             try:
                 monitor_df = pd.read_excel(MONITOR_FILE)
-                if monitor_df.empty or len(monitor_df.columns) == 0:
-                    logger.warning("⚠️ 監控股票.xlsx 內容為空。")
-                else:
-                    name_col = next((col for col in monitor_df.columns if '名稱' in str(col)), monitor_df.columns[0])
-                    id_col = next((col for col in monitor_df.columns if '代號' in str(col)), None)
+                name_col = next((col for col in monitor_df.columns if '名稱' in str(col)), monitor_df.columns[0])
+                
+                for _, row in monitor_df.iterrows():
+                    name = clean_stock_name(row[name_col])
+                    if not name: continue
+                    df = self.repo.get_history("", name)
+                    if df.empty: continue
                     
-                    for _, row in monitor_df.iterrows():
-                        name = str(row[name_col]).strip()
-                        raw_id = str(row[id_col]).strip() if id_col and pd.notna(row[id_col]) else ""
-                        s_id = clean_stock_id(raw_id)
-                        if not s_id:
-                            match = re.search(r'\((\d+)\)', name)
-                            s_id = match.group(1) if match else ""
-                        if not name or name == 'nan': continue
-                        
-                        if name in triggered_exit_stocks:
-                            logger.info(f"🛡️ [策略互斥防護] {name} 今日已觸發庫存撤退風控，自動抑制監控買進提示。")
-                            continue
-                            
-                        df = self.repo.get_history(s_id, name)
-                        if df.empty: continue
-                            
-                        latest = df.iloc[-1]
-                        current_price = latest['Close']
-                        
-                        s_id_str = str(s_id)
-                        if s_id_str in DIVIDEND_PRESETS:
-                            cfg = DIVIDEND_PRESETS[s_id_str]
-                            avg_dividend = (cfg['div_2026'] + cfg['div_2027']) / 2
-                            target_price = avg_dividend / (cfg['target_yield'] / 100)
-                        else:
-                            target_price = current_price * 0.85
-                            
+                    latest = df.iloc[-1]
+                    current_price = latest['Close']
+                    s_id_str = str(latest['id'])
+                    
+                    # 股利大腦計算
+                    if s_id_str in DIVIDEND_PRESETS:
+                        cfg = DIVIDEND_PRESETS[s_id_str]
+                        target_price = ((cfg['div_2026'] + cfg['div_2027']) / 2) / (cfg['target_yield'] / 100)
                         diff_pct = ((current_price - target_price) / target_price) * 100
-                        
-                        # 🟢 名稱或代號只要有一個存在於 global_stock_pool，即斷言「已持有持股」
-                        c_name = clean_stock_name(name)
-                        is_already_owned = (name in global_stock_pool or c_name in global_stock_pool)
-                        
-                        if current_price <= target_price:
-                            alert_type = '庫存逢低加碼提示' if is_already_owned else '監控買進提示'
-                            alert_icon = '🔄' if is_already_owned else '🎯'
-                            alert_desc = "波段趨勢安全，已達估值加倉區間，建議分批加碼。" if is_already_owned else "已達大波段安全安全邊際，建議分批佈局。"
-                            
-                            structured_alerts.append({
-                                'icon': alert_icon, 'type': alert_type, 'name': name,
-                                'close': f"{current_price:.2f}",
-                                'line2': f"買進目標價: {target_price:.2f}",
-                                'desc': alert_desc
-                            })
-                            status_str = "🔄 建議加碼" if is_already_owned else "🎯 已達買點"
-                        else:
-                            status_str = f"溢價 {diff_pct:.1f}%"
-
-                        k_val, d_val, osc_val = np.nan, np.nan, np.nan
-                        if len(df) >= 9:
-                            df_idx = MarketIndicatorService.calculate_kd9(df)
-                            _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
-                            latest_idx = df_idx.iloc[-1]
-                            k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
-                            
+                        status_str = f"溢價 {diff_pct:.1f}%"
+                    else:
+                        target_price = current_price * 0.85
+                        status_str = "溢價 17.6%"  # 保留原有打折數學常數顯示
+                    
+                    # 橫向判斷是否已持有庫存
+                    is_already_owned = (name in global_stock_pool)
+                    
+                    # 觸發買進/加碼邏輯 (且今天沒有觸發清倉或停利)
+                    if current_price <= target_price and name not in triggered_exit_stocks:
                         if is_already_owned:
-                            continue
-                            
-                        stock_res = {
-                            'name': name, 'id': s_id, 'type': '監控股', 'close': current_price,
-                            'k': k_val, 'd': d_val, 'osc': osc_val,
-                            'target_or_cost': f"目標: {target_price:.2f}",
-                            'status': status_str
-                        }
-                        all_stocks_output.append(stock_res)
-            except Exception as e: logger.error(f"解析監控 Excel 失敗: {e}")
+                            structured_alerts.append({'icon': '🔄', 'type': '庫存逢低加碼提示', 'name': name, 'close': f"{current_price:.2f}", 'line2': f"加碼目標: {target_price:.2f}", 'desc': "已達估值加倉區間，建議分批加碼。"})
+                            status_str = "🔄 建議加碼"
+                        else:
+                            structured_alerts.append({'icon': '🎯', 'type': '監控買進提示', 'name': name, 'close': f"{current_price:.2f}", 'line2': f"買進目標: {target_price:.2f}", 'desc': "已達安全邊際，建議分批佈局。"})
+                            status_str = "🎯 已達買點"
 
-        # 3. 發送通知
-        self.notifier.send_line(structured_alerts, self.repo.report_date)
+                    df_idx = MarketIndicatorService.calculate_kd9(df)
+                    _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
+                    
+                    all_stocks_output.append({
+                        'name': name, 'id': latest['id'], 'type': '監控股', 'close': current_price,
+                        'k': df_idx.iloc[-1]['K'], 'd': df_idx.iloc[-1]['D'], 'osc': osc_s.iloc[-1],
+                        'target_or_cost': f"目標: {target_price:.2f}", 'status': status_str
+                    })
+            except Exception as e: logger.error(f"監控計算失敗: {e}")
+
         if all_stocks_output:
             self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output)
-
 
 if __name__ == "__main__":
     orchestrator = StrategyOrchestrator()

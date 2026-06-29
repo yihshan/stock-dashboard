@@ -365,10 +365,27 @@ class StrategyOrchestrator:
         all_stocks_output: List[Dict[str, Any]] = []
         global_stock_pool: Dict[str, Dict[str, Any]] = {}
         
-        # 🟢 定義已知長期核心庫存白名單（防止 Excel 被清空時發生的監控降級與數值錯位）
         core_inventory_symbols = {
             '2330', '3017', '3131', '3443', '6442', '3324', '6510', '3563', 
             '7751', '2308', '7734', '3363', '0056', '00919', '00762', '00990A', '00985A', '00648R', '00724B'
+        }
+
+        # 🟢 修正核心：2026-2027 年「今明兩年預估股利與資產類別殖利率估值大腦」
+        dividend_valuation_presets = {
+            '2330': {'div_2026': 36.0, 'div_2027': 44.0, 'target_yield': 1.8},  # 台積電：成長股溢價，殖利率設 1.8%
+            '2308': {'div_2026': 26.0, 'div_2027': 34.0, 'target_yield': 1.8},  # 台達電：調升估值，目標價推算約 1666 元
+            '3008': {'div_2026': 95.0, 'div_2027': 115.0, 'target_yield': 2.4}, # 大立光：目標價推算約 4375 元
+            '3017': {'div_2026': 32.0, 'div_2027': 42.0, 'target_yield': 1.8},  # 奇鋐
+            '3131': {'div_2026': 50.0, 'div_2027': 65.0, 'target_yield': 1.7},  # 弘塑
+            '3443': {'div_2026': 45.0, 'div_2027': 60.0, 'target_yield': 1.3},  # 創意
+            '6442': {'div_2026': 18.0, 'div_2027': 26.0, 'target_yield': 1.6},  # 光聖
+            '3324': {'div_2026': 16.0, 'div_2027': 24.0, 'target_yield': 1.9},  # 雙鴻
+            '6510': {'div_2026': 35.0, 'div_2027': 50.0, 'target_yield': 1.6},  # 精測
+            '3563': {'div_2026': 12.0, 'div_2027': 18.0, 'target_yield': 2.2},  # 牧德
+            '7751': {'div_2026': 20.0, 'div_2027': 30.0, 'target_yield': 1.9},  # 竑騰
+            '7734': {'div_2026': 55.0, 'div_2027': 75.0, 'target_yield': 2.1},  # 印能科技
+            '8299': {'div_2026': 45.0, 'div_2027': 65.0, 'target_yield': 2.3},  # 群聯
+            '8210': {'div_2026': 24.0, 'div_2027': 34.0, 'target_yield': 2.2},  # 勤誠
         }
 
         # 1. 處理現有庫存移動停利與智慧停損
@@ -490,8 +507,6 @@ class StrategyOrchestrator:
                             s_id = match.group(1) if match else ""
                         if not name or name == 'nan': continue
                         
-                        # 🟢 修正核心 2：防禦性降級攔截鎖。如果偵測到此代號其實在核心庫存白名單內，且剛才庫存讀取失敗，
-                        # 則直接將其完全跳過，絕對不允許它被當作監控股誤判輸出！
                         if s_id in core_inventory_symbols and name not in global_stock_pool:
                             logger.info(f"🛡️ [防禦性攔截] 偵測到庫存核心資產 {name}({s_id}) 被錯誤落入監控流程，已自動攔截隔離。")
                             continue
@@ -502,21 +517,26 @@ class StrategyOrchestrator:
                         latest = df.iloc[-1]
                         current_price = latest['Close']
                         
-                        target_price = np.nan
-                        status_str = "觀察中"
-                        if '買進目標價' in monitor_df.columns and pd.notna(row['買進目標價']):
-                            target_price = float(row['買進目標價'])
-                            diff_pct = ((current_price - target_price) / target_price) * 100
-                            if current_price <= target_price:
-                                structured_alerts.append({
-                                    'icon': '🎯', 'type': '監控買進提示', 'name': name,
-                                    'close': f"{current_price:.2f}",
-                                    'line2': f"買進目標價: {target_price:.2f}",
-                                    'desc': "已達大波段安全安全邊際，建議分批佈局。"
-                                })
-                                status_str = "🎯 已達買點"
-                            else:
-                                status_str = f"溢價 {diff_pct:.1f}%"
+                        # 🟢 根據今明兩年（2026-2027）配息金額與自適應要求殖利率動態計算目標價
+                        if s_id in dividend_valuation_presets:
+                            cfg = dividend_valuation_presets[s_id]
+                            avg_dividend = (cfg['div_2026'] + cfg['div_2027']) / 2
+                            target_price = avg_dividend / (cfg['target_yield'] / 100)
+                        else:
+                            # 備援防禦：若無預設股利資料，則以最新市價打 85 折做為安全邊際買進目標價
+                            target_price = current_price * 0.85
+                            
+                        diff_pct = ((current_price - target_price) / target_price) * 100
+                        if current_price <= target_price:
+                            structured_alerts.append({
+                                'icon': '🎯', 'type': '監控買進提示', 'name': name,
+                                'close': f"{current_price:.2f}",
+                                'line2': f"買進目標價: {target_price:.2f}",
+                                'desc': "已達大波段安全安全邊際，建議分批佈局。"
+                            })
+                            status_str = "🎯 已達買點"
+                        else:
+                            status_str = f"溢價 {diff_pct:.1f}%"
 
                         k_val, d_val, osc_val = np.nan, np.nan, np.nan
                         if len(df) >= 9:
@@ -528,7 +548,7 @@ class StrategyOrchestrator:
                         stock_res = {
                             'name': name, 'id': s_id, 'type': '監控股', 'close': current_price,
                             'k': k_val, 'd': d_val, 'osc': osc_val,
-                            'target_or_cost': f"目標: {target_price:.2f}" if pd.notna(target_price) else "-",
+                            'target_or_cost': f"目標: {target_price:.2f}",
                             'status': status_str
                         }
                         all_stocks_output.append(stock_res)

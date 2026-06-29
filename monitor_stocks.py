@@ -28,6 +28,9 @@ if sys.stdout.encoding != 'utf-8':
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
+# ==========================================
+# 🛑 核心配置與全域常數定義
+# ==========================================
 try:
     import config
     import yfinance as yf
@@ -45,19 +48,26 @@ BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 
+# 隱藏 SSL 警告
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def clean_price(val: Any) -> float:
-    if pd.isna(val): return np.nan
+    """行級防呆核心：將字串安全轉為 float，精確保留至小數點後兩位以上，跳過熔斷/停牌之 '----' 符號"""
+    if pd.isna(val): 
+        return np.nan
     s = str(val).replace(',', '').strip()
-    if s in ['', '----', '--', '-', 'null', 'None', 'nil']: return np.nan
-    try: return float(s)
-    except ValueError: return np.nan
+    if s in ['', '----', '--', '-', 'null', 'None', 'nil']:
+        return np.nan
+    try:
+        return float(s)
+    except ValueError:
+        return np.nan
 
 
 class DateDataParser:
+    """處理日期格式轉換"""
     @staticmethod
     def parse_generic_date(val: Any) -> Optional[date]:
         if pd.isna(val): return None
@@ -92,7 +102,7 @@ class DateDataParser:
 
 
 class StockDataRepository:
-    """系統整合升級版資料庫：內建智慧型名稱去污與雙向代號校正機制"""
+    """資料訪問層：對齊 Dashboard 規格，全面載入資料夾內所有 CSV，確保歷史天數縱向完整載入"""
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.report_date = str(date.today())
@@ -139,11 +149,9 @@ class StockDataRepository:
                         final_date = DateDataParser.parse_generic_date(row[col_map['date']])
                     if not final_date: continue
                         
-                    # 1. 智慧去浮點化與格式化代號 (防止 6695.0 污染)
                     raw_id = str(row[col_map['id']]).replace('"', '').strip() if 'id' in col_map else ""
                     s_id = raw_id.split('.')[0] if raw_id else ""
                     
-                    # 2. 核心去污：剔除名稱內自帶的括號代號 (例如將 "竑騰(6695)" 智慧還原為 "竑騰")
                     raw_name = str(row[col_map['name']]).strip() if 'name' in col_map else ""
                     s_name = re.sub(r'\(.*?\)', '', raw_name).strip()
                     
@@ -161,7 +169,6 @@ class StockDataRepository:
                 
         if raw_data_list:
             master_df = pd.DataFrame(raw_data_list)
-            # 建立雙軌制快取字典
             if 'id' in master_df.columns:
                 for s_id, g in master_df.groupby('id'):
                     if s_id: self._historical_cache_by_id[str(s_id)] = g.sort_values('Date').drop_duplicates('Date')
@@ -170,7 +177,6 @@ class StockDataRepository:
         logger.info(f"✅ 雙軌快取對齊完成！共加載 {len(self._historical_cache_by_id)} 檔唯一代號。")
 
     def get_history(self, stock_id: str, stock_name: str) -> pd.DataFrame:
-        """雙向安全檢索：代號第一優先，名稱去污後第二備援"""
         raw_id = str(stock_id).replace('"', '').strip()
         s_id = raw_id.split('.')[0] if raw_id else ""
         s_name = re.sub(r'\(.*?\)', '', stock_name).strip()
@@ -183,7 +189,7 @@ class StockDataRepository:
 
 
 class MarketIndicatorService:
-    """運算服務層"""
+    """運算服務層：整合大盤與個股指標"""
     @staticmethod
     def calculate_kd9(df: pd.DataFrame) -> pd.DataFrame:
         if len(df) < 9:
@@ -225,6 +231,7 @@ class MarketIndicatorService:
 
     @staticmethod
     def check_macro_regime() -> Tuple[bool, str]:
+        """精準下載即時大盤加權指數，進行年線波段風控"""
         try:
             logger.info("🌐 正在下載大盤加權指數 (計算 200MA 年線系統風險)...")
             twii = yf.Ticker("^TWII")
@@ -233,6 +240,7 @@ class MarketIndicatorService:
             df['200MA'] = df['Close'].rolling(window=200).mean()
             latest_close = df['Close'].iloc[-1]
             ma200 = df['200MA'].iloc[-1]
+            
             is_bull = latest_close >= ma200
             status_text = "【多頭市場】(加權指數處於年線之上，啟動智慧估值緩衝鎖)" if is_bull else "【空頭熊市】(大盤走空，全面防守開啟鐵律停損)"
             direction = "上" if is_bull else "下"
@@ -271,8 +279,10 @@ class NotificationService:
                 "<h3 style='color: #dd6b20; margin-top: 0;'>⚠️ 智慧多因子策略買賣觸發提示</h3>"
                 "<ul style='padding-left: 20px; line-height: 1.6; color: #2d3748;'>"
             )
+            # 🟢 語法錯誤修正核心：將 replace 邏輯徹底移出 f-string 的大括號內部
             for act in alerts:
-                alert_html += f"<li style='margin-bottom: 8px;'>{act.replace('\n', '<br>')}</li>"
+                act_br = act.replace('\n', '<br>')
+                alert_html += f"<li style='margin-bottom: 8px;'>{act_br}</li>"
             alert_html += "</ul></div>"
         else:
             alert_html = (
@@ -411,12 +421,10 @@ class StrategyOrchestrator:
                 inv_df = pd.read_excel(INVENTORY_FILE)
                 updated_rows = []
                 
-                # 先提取庫存股票的專屬代號映射字典，杜絕代號傳空造成的盲查
                 inv_id_map = {}
                 if '股票名稱' in inv_df.columns and '股票代號' in inv_df.columns:
                     inv_id_map = pd.Series(inv_df['股票代號'].astype(str).values, index=inv_df['股票名稱'].astype(str)).to_dict()
                 elif id_col and '股票名稱' in inv_df.columns:
-                    # 容錯處理：如果欄位名稱不叫股票代號
                     id_candidates = [c for c in inv_df.columns if '代號' in str(c) or 'Code' in str(c)]
                     if id_candidates:
                         inv_id_map = pd.Series(inv_df[id_candidates[0]].astype(str).values, index=inv_df['股票名稱'].astype(str)).to_dict()
@@ -434,7 +442,6 @@ class StrategyOrchestrator:
                     highest_record = group['波段最高價'].dropna().head(1).values
                     highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
                     
-                    # 【核心修正】：優先使用唯一的證券代號進行縱向檢索，徹底擊碎名稱字串錯位
                     s_id_target = str(inv_id_map.get(name, "")).split('.')[0].strip()
                     hist_df = self.repo.get_history(s_id_target, name)
                     if hist_df.empty: continue

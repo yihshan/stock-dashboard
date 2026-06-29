@@ -4,7 +4,7 @@ import re
 import smtplib
 import logging
 import sys
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from pathlib import Path
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -57,6 +57,24 @@ def clean_price(val: Any) -> float:
     except ValueError: return np.nan
 
 
+def clean_stock_id(val: Any) -> str:
+    """極端清洗證券代號：去除政府 CSV 常見的 =", 引號與空白，確保純數字字串"""
+    if pd.isna(val): return ""
+    s = str(val).strip()
+    # 去除政府 CSV 常見的 ="2330" 格式
+    s = re.sub(r'[="\'\s]', '', s)
+    return s.split('.')[0]
+
+
+def clean_stock_name(val: Any) -> str:
+    """極端清洗股票名稱：去除所有括號代號、全半形空白"""
+    if pd.isna(val): return ""
+    s = str(val).strip()
+    s = re.sub(r'\(.*?\)', '', s)
+    s = re.sub(r'\[.*?\]', '', s)
+    return s.replace(' ', '').replace(' ', '')
+
+
 class DateDataParser:
     @staticmethod
     def parse_generic_date(val: Any) -> Optional[date]:
@@ -92,12 +110,11 @@ class DateDataParser:
 
 
 class StockDataRepository:
-    """進階資料訪問層：內建 yfinance 歷史補償機制，徹底擊碎新監控股天數不足產生的 N/A"""
+    """政府數據對齊版資料庫：整合模糊名稱與多管道交叉比對，全面尋回失蹤的歷史數據"""
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.report_date = str(date.today())
-        self._historical_cache_by_id: Dict[str, pd.DataFrame] = {}
-        self._historical_cache_by_name: Dict[str, pd.DataFrame] = {}
+        self._master_records: List[Dict[str, Any]] = []
         self._initialize_database()
 
     def _initialize_database(self) -> None:
@@ -110,8 +127,7 @@ class StockDataRepository:
             date_match = re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(latest_file))
             if date_match: self.report_date = date_match.group(1)
 
-        logger.info("💾 正在載入本地歷史 CSV 檔案...")
-        raw_data_list = []
+        logger.info(f"💾 正在解析 {len(csv_files)} 個政府網站歷史收盤 CSV...")
         
         for file_path in csv_files:
             file_date = DateDataParser.extract_date_from_filename(os.path.basename(file_path))
@@ -123,13 +139,13 @@ class StockDataRepository:
                 for col in df.columns:
                     c = str(col).strip()
                     if any(x in c for x in ['日期', 'Date']): col_map['date'] = col
-                    if any(x in c for x in ['證券代號', 'Code', '股票代號']): col_map['id'] = col
-                    if any(x in c for x in ['名稱', 'Name']): col_map['name'] = col
+                    if any(x in c for x in ['證券代號', 'Code', '股票代號', '證券編號']): col_map['id'] = col
+                    if any(x in c for x in ['名稱', 'Name', '證券名稱']): col_map['name'] = col
                     if any(x in c for x in ['收盤', 'Close', 'ClosingPrice']): col_map['close'] = col
                     if any(x in c for x in ['最高', 'High', 'HighestPrice']): col_map['high'] = col
                     if any(x in c for x in ['最低', 'Low', 'LowestPrice']): col_map['low'] = col
                 
-                if 'close' not in col_map: continue
+                if 'close' not in col_map or 'id' not in col_map: continue
                     
                 for _, row in df.iterrows():
                     row_date = file_date
@@ -137,62 +153,47 @@ class StockDataRepository:
                         row_date = DateDataParser.parse_generic_date(row[col_map['date']])
                     if not row_date: continue
                         
-                    raw_id = str(row[col_map['id']]).replace('"', '').strip() if 'id' in col_map else ""
-                    s_id = raw_id.split('.')[0] if raw_id else ""
-                    
-                    raw_name = str(row[col_map['name']]).strip() if 'name' in col_map else ""
-                    s_name = re.sub(r'\(.*?\)', '', raw_name).strip()
-                    
+                    s_id = clean_stock_id(row[col_map['id']])
+                    s_name = clean_stock_name(row[col_map['name']]) if 'name' in col_map else ""
+                    if not s_id: continue
+                        
                     c_val = clean_price(row[col_map['close']])
                     if pd.isna(c_val): continue 
-                    
+                        
                     h_val = clean_price(row[col_map['high']]) if 'high' in col_map else c_val
                     l_val = clean_price(row[col_map['low']]) if 'low' in col_map else c_val
                     
-                    raw_data_list.append({'id': s_id, 'name': s_name, 'Date': row_date, 'Close': c_val, 'High': h_val, 'Low': l_val})
+                    self._master_records.append({
+                        'id': s_id, 'name': s_name, 'Date': row_date, 
+                        'Close': c_val, 'High': h_val, 'Low': l_val
+                    })
             except Exception: continue
-                
-        if raw_data_list:
-            master_df = pd.DataFrame(raw_data_list)
-            if 'id' in master_df.columns:
-                for s_id, g in master_df.groupby('id'):
-                    if s_id: self._historical_cache_by_id[str(s_id)] = g.sort_values('Date').drop_duplicates('Date')
-            for s_name, g in master_df.groupby('name'):
-                if s_name: self._historical_cache_by_name[str(s_name)] = g.sort_values('Date').drop_duplicates('Date')
+        logger.info(f"✅ 政府歷史數據讀取完畢，總紀錄數: {len(self._master_records)}")
 
     def get_history(self, stock_id: str, stock_name: str) -> pd.DataFrame:
-        raw_id = str(stock_id).replace('"', '').strip()
-        s_id = raw_id.split('.')[0] if raw_id else ""
-        s_name = re.sub(r'\(.*?\)', '', stock_name).strip()
+        """核心重構：代號與名稱交叉大融通檢索，徹底避免格式錯位"""
+        target_id = clean_stock_id(stock_id)
+        target_name = clean_stock_name(stock_name)
         
-        df = pd.DataFrame()
-        if s_id and s_id in self._historical_cache_by_id: df = self._historical_cache_by_id[s_id]
-        elif s_name and s_name in self._historical_cache_by_name: df = self._historical_cache_by_name[s_name]
+        if not self._master_records: return pd.DataFrame()
         
-        # 🟢 核心修復：如果本地天數不足 26 天，啟動 yfinance 自動回補機制，完美解決新股 N/A
-        if s_id and (df.empty or len(df) < 26):
-            try:
-                logger.info(f"⚡ 偵測到 {s_name}({s_id}) 本地歷史天數不足，啟動 yfinance 智慧補償...")
-                ticker_str = f"{s_id}.TW" if int(s_id) < 6000 else f"{s_id}.TWO"
-                yf_stock = yf.Ticker(ticker_str)
-                yf_df = yf_stock.history(period="3m")
-                if not yf_df.empty:
-                    yf_df = yf_df.reset_index()
-                    patch_list = []
-                    for _, r in yf_df.iterrows():
-                        p_date = r['Date'].date()
-                        patch_list.append({
-                            'id': s_id, 'name': s_name, 'Date': p_date,
-                            'Close': float(r['Close']), 'High': float(r['High']), 'Low': float(r['Low'])
-                        })
-                    patch_df = pd.DataFrame(patch_list)
-                    if not df.empty:
-                        df = pd.concat([patch_df, df]).drop_duplicates('Date').sort_values('Date')
-                    else:
-                        df = patch_df.sort_values('Date')
-            except Exception as e:
-                logger.error(f"yfinance 補償機制異常: {e}")
-        return df
+        # 轉為 DataFrame 進行多條件聯集過濾
+        df_master = pd.DataFrame(self._master_records)
+        
+        cond_id = (df_master['id'] == target_id) if target_id else pd.Series([False] * len(df_master))
+        
+        # 模糊名稱適應：支持全匹配，或前兩個字頭匹配（防範 聯亞 vs 聯亞光電 錯位）
+        if target_name:
+            cond_name = (df_master['name'] == target_name) | (df_master['name'].str.startswith(target_name[:2]))
+        else:
+            cond_name = pd.Series([False] * len(df_master))
+            
+        df_res = df_master[cond_id | cond_name]
+        
+        if df_res.empty: return pd.DataFrame()
+        
+        # 保證輸出結構與時間序列完整性
+        return df_res.sort_values('Date').drop_duplicates('Date').reset_index(drop=True)
 
 
 class MarketIndicatorService:
@@ -277,16 +278,15 @@ class NotificationService:
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
-        # 🟢 完美還原：依照截圖樣式渲染「智慧多因子策略買賣觸發提示」
         if alerts:
             alert_html = (
-                "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px;'>"
+                "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px Triton;'>"
                 "<h3 style='color: #dd6b20; font-size: 18px; margin-top: 0; margin-bottom: 15px;'>⚠️ 智慧多因子策略買賣觸發提示</h3>"
                 "<ul style='list-style-type: disc; padding-left: 20px; line-height: 1.8; color: #2d3748; font-size: 14px;'>"
             )
             for a in alerts:
                 alert_html += (
-                    f"<li style='margin-bottom: 15px; list-style-type: disc;'>"
+                    f"<li style='margin-bottom: 15px; list-style-type: disc;'> "
                     f"<b>{a['icon']} [{a['type']}] {a['name']}</b><br>"
                     f"<span style='color: #4a5568;'>- 今日收盤: {a['close']}</span><br>"
                     f"<span style='color: #4a5568;'>- {a['line2']}</span><br>"
@@ -296,7 +296,7 @@ class NotificationService:
             alert_html += "</ul></div>"
         else:
             alert_html = (
-                "<div style='background-color: #f0fff4; border-left: 5px solid #38a169; padding: 15px; margin-bottom: 25px; border-radius: 4px Dino;'>"
+                "<div style='background-color: #f0fff4; border-left: 5px solid #38a169; padding: 15px; margin-bottom: 25px; border-radius: 4px;'>"
                 "<h3 style='color: #38a169; margin-top: 0;'>✅ 大波段策略監控正常</h3>"
                 "<p style='color: #276749; margin: 0;'>今日現有庫存皆在安全波段中，且觀察名單尚未觸發加倉買進目標價。</p>"
                 "</div>"
@@ -385,7 +385,7 @@ class StrategyOrchestrator:
                 for _, row in monitor_df.iterrows():
                     name = str(row[name_col]).strip()
                     raw_id = str(row[id_col]).strip() if id_col and pd.notna(row[id_col]) else ""
-                    s_id = raw_id.split('.')[0] if raw_id else ""
+                    s_id = clean_stock_id(raw_id)
                     if not s_id:
                         match = re.search(r'\((\d+)\)', name)
                         s_id = match.group(1) if match else ""
@@ -457,7 +457,7 @@ class StrategyOrchestrator:
                     highest_record = group['波段最高價'].dropna().head(1).values
                     highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
                     
-                    s_id_target = str(inv_id_map.get(name, "")).split('.')[0].strip()
+                    s_id_target = clean_stock_id(inv_id_map.get(name, ""))
                     hist_df = self.repo.get_history(s_id_target, name)
                     if hist_df.empty: continue
                     

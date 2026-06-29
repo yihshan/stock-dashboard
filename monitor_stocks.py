@@ -45,7 +45,7 @@ BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 
-# 🟢 全域安全常數：2026-2027 年今明兩年預估股利與要求殖利率大腦
+# 🟢 全域核心大腦：今明兩年預估股利、要求殖利率與內建決策路徑常數
 DIVIDEND_PRESETS = {
     '2330': {'name': '台積電', 'div_2026': 36.0, 'div_2027': 44.0, 'target_yield': 1.8},  
     '2308': {'name': '台達電', 'div_2026': 26.0, 'div_2027': 34.0, 'target_yield': 1.8},  
@@ -200,7 +200,7 @@ class StockDataRepository:
         else:
             cond_exact = (self.master_df['name'] == target_name)
             cond_remap = (self.master_df['name'] == f"{target_name}光電") | (self.master_df['name'] == f"{target_name}科技")
-            df_res = self.master_df[cond_exact | cond_remap]
+            df_res = self.master_df[cond_exact | remap]
             
         if df_res.empty: return pd.DataFrame()
         
@@ -286,27 +286,60 @@ class NotificationService:
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
-        preset_rows = ""
+        # 🟢 修正核心：將「智慧股利估值參數」橫向融合成「2026-2027 今明兩年智慧股利估值參數基準面板」
+        preset_matrix_rows = ""
+        
+        # 內建靜態路徑與邏輯對照表，直接在參數表面板呈現，徹底白箱化
+        logic_desc_map = {
+            '2330': {'type': '核心成長股', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '多頭環境下享智慧緩衝保護'},
+            '2308': {'type': '核心設備股', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '多頭環境下享智慧緩衝保護'},
+            '3008': {'type': '核心高價股', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '空頭年線下啟動鐵律停損'},
+            '3017': {'type': 'AI供應鏈', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '回檔跌破15%強制觸發停利'},
+            '3131': {'type': 'AI供應鏈', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '回檔跌破15%強制觸發停利'},
+            '3443': {'type': 'AI供應鏈', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '強制封殺策略互斥矛盾訊號'},
+            '3324': {'type': 'AI供應鏈', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '強制封殺策略互斥矛盾訊號'},
+        }
+
         for s_id, cfg in DIVIDEND_PRESETS.items():
-            preset_rows += (
-                f"<tr>"
-                f"<td style='padding:6px 10px; border:1px solid #e2e8f0; text-align:center;'><b>{cfg['name']}</b><br><small style='color:#718096;'>{s_id}</small></td>"
-                f"<td style='padding:6px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2026']:.2f} 元</td>"
-                f"<td style='padding:6px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2027']:.2f} 元</td>"
-                f"<td style='padding:6px 10px; border:1px solid #e2e8f0; text-align:center; font-weight:bold; color:#2b6cb0;'>{cfg['target_yield']:.2f}%</td>"
+            # 計算該項目的估值買點作為參考
+            avg_div = (cfg['div_2026'] + cfg['div_2027']) / 2
+            calc_target = avg_div / (cfg['target_yield'] / 100)
+            
+            # 獲利內建策略矩陣描述或套用備援
+            l_cfg = logic_desc_map.get(s_id, {
+                'type': '常規追蹤股', 
+                'trigger_buy': '現價 ≦ 股利估值目標價', 
+                'trigger_add': '現價 ≦ 估值加倉區間', 
+                'defense': '風控優先全面防守'
+            })
+            
+            preset_matrix_rows += (
+                f"<tr style='border-bottom: 1px solid #e2e8f0;'>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center; background-color:#f7fafc;'><b>{cfg['name']}</b><br><small style='color:#718096;'>{s_id}</small></td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center;'><span style='background-color:#ebf8ff; color:#2b6cb0; padding:2px 6px; border-radius:4px; font-size:12px;'>{l_cfg['type']}</span></td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right; font-weight:bold; color:#2d3748;'>{cfg['div_2026']:.1f} 元</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right; font-weight:bold; color:#2d3748;'>{cfg['div_2027']:.1f} 元</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center; font-weight:bold; color:#dd6b20;'>{cfg['target_yield']:.2f}%</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right; background-color:#fffaf0; font-weight:bold; color:#b7791f;'>{calc_target:.1f}</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; font-size:12px; color:#4a5568;'>1. {l_cfg['trigger_buy']}<br>2. {l_cfg['trigger_add']}</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; font-size:12px; color:#e53e3e;'>🛡️ {l_cfg['defense']}</td>"
                 f"</tr>"
             )
         
         dividend_table_html = (
-            f"<div style='margin-bottom: 25px; background-color: #f7fafc; padding: 15px; border: 1px solid #e2e8f0; border-radius: 6px;'>"
-            f"<h4 style='color: #2b6cb0; margin-top: 0; margin-bottom: 12px; font-size: 15px;'>📋 2026-2027 今明兩年智慧股利估值參數基準面板</h4>"
-            f"<table style='width:100%; border-collapse:collapse; background-color: white; font-size: 13px;'>"
-            f"<thead><tr style='background-color: #2b6cb0; color: white;'>"
-            f"<th style='padding:8px 10px; border:1px solid #e2e8f0;'>股票名稱</th>"
-            f"<th style='padding:8px 10px; border:1px solid #e2e8f0;'>2026 預估配息</th>"
-            f"<th style='padding:8px 10px; border:1px solid #e2e8f0;'>2027 預估配息</th>"
-            f"<th style='padding:8px 10px; border:1px solid #e2e8f0;'>核心要求殖利率</th>"
-            f"</tr></thead><tbody>{preset_rows}</tbody></table>"
+            f"<div style='margin-bottom: 30px; background-color: #fff; padding: 18px; border: 2px solid #2b6cb0; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>"
+            f"<h3 style='color: #2b6cb0; margin-top: 0; margin-bottom: 14px; font-size: 16px; border-bottom: 2px solid #2b6cb0; padding-bottom: 6px;'>📋 2026-2027 今明兩年智慧股利估值與策略決策邏輯綜合參數面板</h3>"
+            f"<table style='width:100%; border-collapse:collapse; font-size:13px; text-align:left; border: 1px solid #e2e8f0;'>"
+            f"<thead><tr style='background-color: #2b6cb0; color: white; text-align:center;'>"
+            f"<th style='padding:10px; border:1px solid #e2e8f0;'>股票名稱</th>"
+            f"<th style='padding:10px; border:1px solid #e2e8f0;'>資產類型</th>"
+            f"<th style='padding:10px; border:1px solid #e2e8f0;'>2026預估配息</th>"
+            f"<th style='padding:10px; border:1px solid #e2e8f0;'>2027預估配息</th>"
+            f"<th style='padding:10px; border:1px solid #e2e8f0;'>要求殖利率</th>"
+            f"<th style='padding:10px; border:1px solid #e2e8f0; background-color:#dd6b20;'>推算目標價</th>"
+            f"<th style='padding:10px; border:1px solid #e2e8f0;'>採取行動邏輯路徑</th>"
+            f"<th style='padding:10px; border:1px solid #e2e8f0;'>大盤聯動與自適應防護機制</th>"
+            f"</tr></thead><tbody>{preset_matrix_rows}</tbody></table>"
             f"</div>"
         )
 
@@ -368,7 +401,7 @@ class NotificationService:
         html = (
             f"<html><body style=\"font-family: 'Microsoft JhengHei', sans-serif; padding: 20px;\">"
             f"<h2 style=\"color: #1a365d;\">📊 每日台股策略監控與技術指標自動彙整</h2>"
-            f"{dividend_table_html}"  
+            f"{dividend_table_html}"  # 🟢 置頂合併大面板核心：卡位成功！
             f"<p style='color: #4a5568;'><b>數據基準日：</b>{report_date}</p>"
             f"<p style='background-color: #edf2f7; padding: 10px; border-radius: 4px; color: #4a5568;'>🌐 <b>總體環境監測：</b>{market_text}</p>"
             f"{alert_html}"  
@@ -492,7 +525,6 @@ class StrategyOrchestrator:
 
                         k_val, d_val, osc_val = np.nan, np.nan, np.nan
                         if len(hist_df) >= 9:
-                            # 🟢 修正優化 1：技術指標對齊。將排序重設索引後的 df_idx 統一傳入 MACD，杜絕錯位。
                             df_idx = MarketIndicatorService.calculate_kd9(hist_df)
                             _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
                             latest_idx = df_idx.iloc[-1]
@@ -547,7 +579,6 @@ class StrategyOrchestrator:
                         latest = df.iloc[-1]
                         current_price = latest['Close']
                         
-                        # 🟢 修正優化 2：型態相容。強制轉為字串進行全域常數存取，防堵型態比對死角。
                         s_id_str = str(s_id)
                         if s_id_str in DIVIDEND_PRESETS:
                             cfg = DIVIDEND_PRESETS[s_id_str]

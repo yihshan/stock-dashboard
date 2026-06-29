@@ -172,19 +172,21 @@ class StockDataRepository:
         logger.info(f"✅ 政府歷史數據讀取完畢，總紀錄數: {len(self.master_df)}")
 
     def get_history(self, stock_id: str, stock_name: str) -> pd.DataFrame:
+        """🟢 修正核心 1：嚴格落實『代號優先精準匹配』，斬斷不安全字頭模糊對齊引起的股價污染"""
         target_id = clean_stock_id(stock_id)
         target_name = clean_stock_name(stock_name)
         
         if self.master_df.empty: return pd.DataFrame()
         
-        cond_id = (self.master_df['id'] == target_id) if target_id else pd.Series([False] * len(self.master_df))
-        
-        if target_name:
-            cond_name = (self.master_df['name'] == target_name) | (self.master_df['name'].str.startswith(target_name[:2]))
+        # 1. 如果有明確代號，實施最嚴格的代號唯一篩選（防堵大立/大立光、台達化/台達電碰撞）
+        if target_id:
+            df_res = self.master_df[self.master_df['id'] == target_id]
         else:
-            cond_name = pd.Series([False] * len(self.master_df))
+            # 2. 只有在沒代號時才使用名稱，且名稱必須去除括號全字匹配，或極窄幅度的後綴融通（如 聯亞 vs 聯亞光電）
+            cond_exact = (self.master_df['name'] == target_name)
+            cond_remap = (self.master_df['name'] == f"{target_name}光電") | (self.master_df['name'] == f"{target_name}科技")
+            df_res = self.master_df[cond_exact | cond_remap]
             
-        df_res = self.master_df[cond_id | cond_name]
         if df_res.empty: return pd.DataFrame()
         
         return df_res.sort_values('Date').drop_duplicates('Date').reset_index(drop=True)
@@ -370,155 +372,162 @@ class StrategyOrchestrator:
         if MONITOR_FILE.exists():
             try:
                 monitor_df = pd.read_excel(MONITOR_FILE)
-                name_col = next((col for col in monitor_df.columns if '名稱' in str(col)), monitor_df.columns[0])
-                id_col = next((col for col in monitor_df.columns if '代號' in str(col)), None)
-                
-                for _, row in monitor_df.iterrows():
-                    name = str(row[name_col]).strip()
-                    raw_id = str(row[id_col]).strip() if id_col and pd.notna(row[id_col]) else ""
-                    s_id = clean_stock_id(raw_id)
-                    if not s_id:
-                        match = re.search(r'\((\d+)\)', name)
-                        s_id = match.group(1) if match else ""
-                    if not name or name == 'nan': continue
-                        
-                    df = self.repo.get_history(s_id, name)
-                    if df.empty: continue
-                        
-                    latest = df.iloc[-1]
-                    current_price = latest['Close']
+                if monitor_df.empty or len(monitor_df.columns) == 0:
+                    logger.warning("⚠️ 監控股票.xlsx 內容為空。")
+                else:
+                    name_col = next((col for col in monitor_df.columns if '名稱' in str(col)), monitor_df.columns[0])
+                    id_col = next((col for col in monitor_df.columns if '代號' in str(col)), None)
                     
-                    target_price = np.nan
-                    status_str = "觀察中"
-                    if '買進目標價' in monitor_df.columns and pd.notna(row['買進目標價']):
-                        target_price = float(row['買進目標價'])
-                        diff_pct = ((current_price - target_price) / target_price) * 100
-                        if current_price <= target_price:
-                            structured_alerts.append({
-                                'icon': '🎯', 'type': '監控買進提示', 'name': name,
-                                'close': f"{current_price:.2f}",
-                                'line2': f"買進目標價: {target_price:.2f}",
-                                'desc': "已達大波段安全安全邊際，建議分批佈局。"
-                            })
-                            status_str = "🎯 已達買點"
-                        else:
-                            status_str = f"溢價 {diff_pct:.1f}%"
-
-                    k_val, d_val, osc_val = np.nan, np.nan, np.nan
-                    if len(df) >= 9:
-                        df_idx = MarketIndicatorService.calculate_kd9(df)
-                        _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
-                        latest_idx = df_idx.iloc[-1]
-                        k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
+                    for _, row in monitor_df.iterrows():
+                        name = str(row[name_col]).strip()
+                        raw_id = str(row[id_col]).strip() if id_col and pd.notna(row[id_col]) else ""
+                        s_id = clean_stock_id(raw_id)
+                        if not s_id:
+                            match = re.search(r'\((\d+)\)', name)
+                            s_id = match.group(1) if match else ""
+                        if not name or name == 'nan': continue
+                            
+                        df = self.repo.get_history(s_id, name)
+                        if df.empty: continue
+                            
+                        latest = df.iloc[-1]
+                        current_price = latest['Close']
                         
-                    stock_res = {
-                        'name': name, 'id': s_id, 'type': '監控股', 'close': current_price,
-                        'k': k_val, 'd': d_val, 'osc': osc_val,
-                        'target_or_cost': f"目標: {target_price:.2f}" if pd.notna(target_price) else "-",
-                        'status': status_str
-                    }
-                    all_stocks_output.append(stock_res)
-                    global_stock_pool[name] = stock_res
+                        target_price = np.nan
+                        status_str = "觀察中"
+                        if '買進目標價' in monitor_df.columns and pd.notna(row['買進目標價']):
+                            target_price = float(row['買進目標價'])
+                            diff_pct = ((current_price - target_price) / target_price) * 100
+                            if current_price <= target_price:
+                                structured_alerts.append({
+                                    'icon': '🎯', 'type': '監控買進提示', 'name': name,
+                                    'close': f"{current_price:.2f}",
+                                    'line2': f"買進目標價: {target_price:.2f}",
+                                    'desc': "已達大波段安全安全邊際，建議分批佈局。"
+                                })
+                                status_str = "🎯 已達買點"
+                            else:
+                                status_str = f"溢價 {diff_pct:.1f}%"
+
+                        k_val, d_val, osc_val = np.nan, np.nan, np.nan
+                        if len(df) >= 9:
+                            df_idx = MarketIndicatorService.calculate_kd9(df)
+                            _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
+                            latest_idx = df_idx.iloc[-1]
+                            k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
+                            
+                        stock_res = {
+                            'name': name, 'id': s_id, 'type': '監控股', 'close': current_price,
+                            'k': k_val, 'd': d_val, 'osc': osc_val,
+                            'target_or_cost': f"目標: {target_price:.2f}" if pd.notna(target_price) else "-",
+                            'status': status_str
+                        }
+                        all_stocks_output.append(stock_res)
+                        global_stock_pool[name] = stock_res
             except Exception as e: logger.error(f"解析監控 Excel 失敗: {e}")
 
         # 2. 處理現有庫存移動停利與智慧停損
         if INVENTORY_FILE.exists():
             try:
                 inv_df = pd.read_excel(INVENTORY_FILE)
-                updated_rows = []
                 
-                # 🟢 修正核心：全面實施「庫存 Excel 欄位智慧模糊對齊」，徹底擊碎 '股票名稱' KeyError
-                inv_name_col = next((c for c in inv_df.columns if '名稱' in str(c) or '股票' in str(c)), inv_df.columns[0])
-                inv_id_col = next((c for c in inv_df.columns if '代號' in str(c) or 'Code' in str(c)), None)
-                inv_shares_col = next((c for c in inv_df.columns if '股數' in str(c) or '張數' in str(c)), None)
-                inv_cost_col = next((c for c in inv_df.columns if '成本' in str(c) or '價位' in str(c)), None)
-                
-                inv_id_map = {}
-                if inv_id_col:
-                    inv_id_map = pd.Series(inv_df[inv_id_col].astype(str).values, index=inv_df[inv_name_col].astype(str)).to_dict()
+                if inv_df.empty or len(inv_df.columns) == 0:
+                    logger.warning("⚠️ 庫存股票.xlsx 目前無內容，跳過持股風控運算。")
+                else:
+                    updated_rows = []
+                    inv_name_col = next((c for c in inv_df.columns if '名稱' in str(c) or '股票' in str(c)), inv_df.columns[0])
+                    inv_id_col = next((c for c in inv_df.columns if '代號' in str(c) or 'Code' in str(c)), None)
+                    inv_shares_col = next((c for c in inv_df.columns if '股數' in str(c) or '張數' in str(c)), None)
+                    inv_cost_col = next((c for c in inv_df.columns if '成本' in str(c) or '價位' in str(c)), None)
+                    
+                    inv_id_map = {}
+                    if inv_id_col:
+                        inv_id_map = pd.Series(inv_df[inv_id_col].astype(str).values, index=inv_df[inv_name_col].astype(str)).to_dict()
 
-                for name, group in inv_df.groupby(inv_name_col):
-                    name = str(name).strip()
-                    total_shares = group[inv_shares_col].sum() if inv_shares_col else 1
-                    if total_shares <= 0: continue
-                    
-                    avg_cost = (group[inv_cost_col] * group[inv_shares_col]).sum() / total_shares if inv_cost_col and inv_shares_col else 0.0
-                    trail_pct = group['移動停利百分比(%)'].dropna().head(1).values if '移動停利百分比(%)' in inv_df.columns else []
-                    trail_pct = float(trail_pct[0]) if len(trail_pct) > 0 and not pd.isna(trail_pct[0]) else 15.0
-                    base_stop = avg_cost 
-                    
-                    highest_record = group['波段最高價'].dropna().head(1).values if '波段最高價' in inv_df.columns else []
-                    highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
-                    
-                    s_id_target = clean_stock_id(inv_id_map.get(name, ""))
-                    hist_df = self.repo.get_history(s_id_target, name)
-                    if hist_df.empty: continue
-                    
-                    latest = hist_df.iloc[-1]
-                    current_price = latest['Close']
-                    s_id = latest['id'] if 'id' in latest and latest['id'] else s_id_target
-                    
-                    if highest_price == 0.0 or pd.isna(highest_price): highest_price = hist_df['Close'].max()
+                    for name, group in inv_df.groupby(inv_name_col):
+                        name = str(name).strip()
+                        total_shares = group[inv_shares_col].sum() if inv_shares_col else 1
+                        if total_shares <= 0: continue
+                        
+                        avg_cost = (group[inv_cost_col] * group[inv_shares_col]).sum() / total_shares if inv_cost_col and inv_shares_col else 0.0
+                        trail_pct = group['移動停利百分比(%)'].dropna().head(1).values if '移動停利百分比(%)' in inv_df.columns else []
+                        trail_pct = float(trail_pct[0]) if len(trail_pct) > 0 and not pd.isna(trail_pct[0]) else 15.0
+                        base_stop = avg_cost 
+                        
+                        highest_record = group['波段最高價'].dropna().head(1).values if '波段最高價' in inv_df.columns else []
+                        highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
+                        
+                        s_id_target = clean_stock_id(inv_id_map.get(name, ""))
+                        hist_df = self.repo.get_history(s_id_target, name)
+                        if hist_df.empty: continue
+                        
+                        latest = hist_df.iloc[-1]
+                        current_price = latest['Close']
+                        s_id = latest['id'] if 'id' in latest and latest['id'] else s_id_target
+                        
+                        if highest_price == 0.0 or pd.isna(highest_price): highest_price = hist_df['Close'].max()
 
-                    status_str = "✅ 持股安全"
-                    if current_price > highest_price: highest_price = current_price
-                    sell_trigger_price = highest_price * (1 - (trail_pct / 100))
-                    
-                    c_p_str = f"{current_price:.2f}"
-                    a_c_str = f"{avg_cost:.2f}"
-                    h_p_str = f"{highest_price:.2f}"
-                    s_t_str = f"{sell_trigger_price:.2f}"
+                        status_str = "✅ 持股安全"
+                        if current_price > highest_price: highest_price = current_price
+                        sell_trigger_price = highest_price * (1 - (trail_pct / 100))
+                        
+                        c_p_str = f"{current_price:.2f}"
+                        a_c_str = f"{avg_cost:.2f}"
+                        h_p_str = f"{highest_price:.2f}"
+                        s_t_str = f"{sell_trigger_price:.2f}"
 
-                    if current_price <= base_stop:
-                        if is_bull_market:
+                        if current_price <= base_stop:
+                            if is_bull_market:
+                                structured_alerts.append({
+                                    'icon': '🔄', 'type': '智慧緩衝：暫緩停損', 'name': name, 'close': c_p_str,
+                                    'line2': f"平均成本: {a_c_str}",
+                                    'desc': "大盤加權指數處於強勢多頭格局，此回檔建議暫緩盲目砍單。"
+                                })
+                                status_str = "🔄 智慧緩衝"
+                            else:
+                                structured_alerts.append({
+                                    'icon': '🛑', 'type': '鐵律清倉停損', 'name': name, 'close': c_p_str,
+                                    'line2': f"平均成本: {a_c_str}",
+                                    'desc': "大盤確認走空，請嚴守資金紀律全數清倉！"
+                                })
+                                status_str = "🛑 鐵律停損"
+                        elif current_price <= sell_trigger_price:
                             structured_alerts.append({
-                                'icon': '🔄', 'type': '智慧緩衝：暫緩停損', 'name': name, 'close': c_p_str,
-                                'line2': f"平均成本: {a_c_str}",
-                                'desc': "大盤加權指數處於強勢多頭格局，此回檔建議暫緩盲目砍單。"
+                                'icon': '⚠️', 'type': '庫存移動停利', 'name': name, 'close': c_p_str,
+                                'line2': f"波段最高: {h_p_str}",
+                                'desc': f"觸發移動停利線 ({s_t_str})，建議獲利落袋。"
                             })
-                            status_str = "🔄 智慧緩衝"
+                            status_str = "⚠️ 移動停利"
+
+                        k_val, d_val, osc_val = np.nan, np.nan, np.nan
+                        if len(hist_df) >= 9:
+                            df_idx = MarketIndicatorService.calculate_kd9(hist_df)
+                            _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
+                            latest_idx = df_idx.iloc[-1]
+                            k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
+
+                        stock_res = {
+                            'name': name, 'id': s_id, 'type': '庫存股', 'close': current_price,
+                            'k': k_val, 'd': d_val, 'osc': osc_val,
+                            'target_or_cost': f"成本: {avg_cost:.2f}",
+                            'status': status_str
+                        }
+                        
+                        if name in global_stock_pool:
+                            idx_to_update = next(i for i, x in enumerate(all_stocks_output) if x['name'] == name)
+                            all_stocks_output[idx_to_update] = stock_res
                         else:
-                            structured_alerts.append({
-                                'icon': '🛑', 'type': '鐵律清倉停損', 'name': name, 'close': c_p_str,
-                                'line2': f"平均成本: {a_c_str}",
-                                'desc': "大盤確認走空，請嚴守資金紀律全數清倉！"
-                            })
-                            status_str = "🛑 鐵律停損"
-                    elif current_price <= sell_trigger_price:
-                        structured_alerts.append({
-                            'icon': '⚠️', 'type': '庫存移動停利', 'name': name, 'close': c_p_str,
-                            'line2': f"波段最高: {h_p_str}",
-                            'desc': f"觸發移動停利線 ({s_t_str})，建議獲利落袋。"
-                        })
-                        status_str = "⚠️ 移動停利"
-
-                    k_val, d_val, osc_val = np.nan, np.nan, np.nan
-                    if len(hist_df) >= 9:
-                        df_idx = MarketIndicatorService.calculate_kd9(hist_df)
-                        _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
-                        latest_idx = df_idx.iloc[-1]
-                        k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
-
-                    stock_res = {
-                        'name': name, 'id': s_id, 'type': '庫存股', 'close': current_price,
-                        'k': k_val, 'd': d_val, 'osc': osc_val,
-                        'target_or_cost': f"成本: {avg_cost:.2f}",
-                        'status': status_str
-                    }
-                    
-                    if name in global_stock_pool:
-                        idx_to_update = next(i for i, x in enumerate(all_stocks_output) if x['name'] == name)
-                        all_stocks_output[idx_to_update] = stock_res
-                    else:
-                        all_stocks_output.append(stock_res)
-                    
-                    for _, row in group.iterrows():
-                        row_copy = row.copy()
-                        if '移動停利百分比(%)' in inv_df.columns: row_copy['移動停利百分比(%)'] = trail_pct
-                        if '波段最高價' in inv_df.columns: row_copy['波段最高價'] = highest_price
-                        if '保本停損價' in inv_df.columns: row_copy['保本停損價'] = base_stop
-                        updated_rows.append(row_copy)
-                pd.DataFrame(updated_rows).to_excel(INVENTORY_FILE, index=False)
+                            all_stocks_output.append(stock_res)
+                        
+                        for _, row in group.iterrows():
+                            row_copy = row.copy()
+                            if '移動停利百分比(%)' in inv_df.columns: row_copy['移動停利百分比(%)'] = trail_pct
+                            if '波段最高價' in inv_df.columns: row_copy['波段最高價'] = highest_price
+                            if '保本停損價' in inv_df.columns: row_copy['保本停損價'] = base_stop
+                            updated_rows.append(row_copy)
+                            
+                    if updated_rows:
+                        pd.DataFrame(updated_rows).to_excel(INVENTORY_FILE, index=False)
             except Exception as e: logger.error(f"庫存智慧風控計算失敗: {e}")
 
         # 3. 發送通知

@@ -365,27 +365,24 @@ class StrategyOrchestrator:
         all_stocks_output: List[Dict[str, Any]] = []
         global_stock_pool: Dict[str, Dict[str, Any]] = {}
         
-        core_inventory_symbols = {
-            '2330', '3017', '3131', '3443', '6442', '3324', '6510', '3563', 
-            '7751', '2308', '7734', '3363', '0056', '00919', '00762', '00990A', '00985A', '00648R', '00724B'
-        }
+        # 🟢 建立一個用來記錄今天庫存已經觸發「撤退訊號」的隔離集合，防止策略打架
+        triggered_exit_stocks = set()
 
-        # 🟢 修正核心：2026-2027 年「今明兩年預估股利與資產類別殖利率估值大腦」
         dividend_valuation_presets = {
-            '2330': {'div_2026': 36.0, 'div_2027': 44.0, 'target_yield': 1.8},  # 台積電：成長股溢價，殖利率設 1.8%
-            '2308': {'div_2026': 26.0, 'div_2027': 34.0, 'target_yield': 1.8},  # 台達電：調升估值，目標價推算約 1666 元
-            '3008': {'div_2026': 95.0, 'div_2027': 115.0, 'target_yield': 2.4}, # 大立光：目標價推算約 4375 元
-            '3017': {'div_2026': 32.0, 'div_2027': 42.0, 'target_yield': 1.8},  # 奇鋐
-            '3131': {'div_2026': 50.0, 'div_2027': 65.0, 'target_yield': 1.7},  # 弘塑
-            '3443': {'div_2026': 45.0, 'div_2027': 60.0, 'target_yield': 1.3},  # 創意
-            '6442': {'div_2026': 18.0, 'div_2027': 26.0, 'target_yield': 1.6},  # 光聖
-            '3324': {'div_2026': 16.0, 'div_2027': 24.0, 'target_yield': 1.9},  # 雙鴻
-            '6510': {'div_2026': 35.0, 'div_2027': 50.0, 'target_yield': 1.6},  # 精測
-            '3563': {'div_2026': 12.0, 'div_2027': 18.0, 'target_yield': 2.2},  # 牧德
-            '7751': {'div_2026': 20.0, 'div_2027': 30.0, 'target_yield': 1.9},  # 竑騰
-            '7734': {'div_2026': 55.0, 'div_2027': 75.0, 'target_yield': 2.1},  # 印能科技
-            '8299': {'div_2026': 45.0, 'div_2027': 65.0, 'target_yield': 2.3},  # 群聯
-            '8210': {'div_2026': 24.0, 'div_2027': 34.0, 'target_yield': 2.2},  # 勤誠
+            '2330': {'div_2026': 36.0, 'div_2027': 44.0, 'target_yield': 1.8},  
+            '2308': {'div_2026': 26.0, 'div_2027': 34.0, 'target_yield': 1.8},  
+            '3008': {'div_2026': 95.0, 'div_2027': 115.0, 'target_yield': 2.4}, 
+            '3017': {'div_2026': 32.0, 'div_2027': 42.0, 'target_yield': 1.8},  
+            '3131': {'div_2026': 50.0, 'div_2027': 65.0, 'target_yield': 1.7},  
+            '3443': {'div_2026': 45.0, 'div_2027': 60.0, 'target_yield': 1.3},  
+            '6442': {'div_2026': 18.0, 'div_2027': 26.0, 'target_yield': 1.6},  
+            '3324': {'div_2026': 16.0, 'div_2027': 24.0, 'target_yield': 1.9},  
+            '6510': {'div_2026': 35.0, 'div_2027': 50.0, 'target_yield': 1.6},  
+            '3563': {'div_2026': 12.0, 'div_2027': 18.0, 'target_yield': 2.2},  
+            '7751': {'div_2026': 20.0, 'div_2027': 30.0, 'target_yield': 1.9},  
+            '7734': {'div_2026': 55.0, 'div_2027': 75.0, 'target_yield': 2.1},  
+            '8299': {'div_2026': 45.0, 'div_2027': 65.0, 'target_yield': 2.3},  
+            '8210': {'div_2026': 24.0, 'div_2027': 34.0, 'target_yield': 2.2},  
         }
 
         # 1. 處理現有庫存移動停利與智慧停損
@@ -453,6 +450,7 @@ class StrategyOrchestrator:
                                     'desc': "大盤確認走空，請嚴守資金紀律全數清倉！"
                                 })
                                 status_str = "🛑 鐵律停損"
+                                triggered_exit_stocks.add(name)  # 🛑 記錄停損撤退
                         elif current_price <= sell_trigger_price:
                             structured_alerts.append({
                                 'icon': '⚠️', 'type': '庫存移動停利', 'name': name, 'close': c_p_str,
@@ -460,6 +458,7 @@ class StrategyOrchestrator:
                                 'desc': f"觸發移動停利線 ({s_t_str})，建議獲利落袋。"
                             })
                             status_str = "⚠️ 移動停利"
+                            triggered_exit_stocks.add(name)  # ⚠️ 記錄停利撤退
 
                         k_val, d_val, osc_val = np.nan, np.nan, np.nan
                         if len(hist_df) >= 9:
@@ -507,8 +506,9 @@ class StrategyOrchestrator:
                             s_id = match.group(1) if match else ""
                         if not name or name == 'nan': continue
                         
-                        if s_id in core_inventory_symbols and name not in global_stock_pool:
-                            logger.info(f"🛡️ [防禦性攔截] 偵測到庫存核心資產 {name}({s_id}) 被錯誤落入監控流程，已自動攔截隔離。")
+                        # 🟢 修正核心 1：訊號橫向隔離。如果該股今天已經在庫存中觸發停利、停損，強制封殺買進提示！
+                        if name in triggered_exit_stocks:
+                            logger.info(f"🛡️ [策略互斥防護] {name} 今日已觸發庫存撤退風控，自動抑制監控買進提示。")
                             continue
                             
                         df = self.repo.get_history(s_id, name)
@@ -517,24 +517,30 @@ class StrategyOrchestrator:
                         latest = df.iloc[-1]
                         current_price = latest['Close']
                         
-                        # 🟢 根據今明兩年（2026-2027）配息金額與自適應要求殖利率動態計算目標價
                         if s_id in dividend_valuation_presets:
                             cfg = dividend_valuation_presets[s_id]
                             avg_dividend = (cfg['div_2026'] + cfg['div_2027']) / 2
                             target_price = avg_dividend / (cfg['target_yield'] / 100)
                         else:
-                            # 備援防禦：若無預設股利資料，則以最新市價打 85 折做為安全邊際買進目標價
                             target_price = current_price * 0.85
                             
                         diff_pct = ((current_price - target_price) / target_price) * 100
+                        
+                        # 🟢 修正核心 2：文義修正。如果原本就手握庫存（且安全無虞），便宜價觸發時應定義為『逢低加碼』而非新手『佈局』
+                        is_already_owned = (name in global_stock_pool)
+                        
                         if current_price <= target_price:
+                            alert_type = '庫存逢低加碼提示' if is_already_owned else '監控買進提示'
+                            alert_icon = '🔄' if is_already_owned else '🎯'
+                            alert_desc = "波段趨勢安全，已達估值加倉區間，建議分批加碼。" if is_already_owned else "已達大波段安全安全邊際，建議分批佈局。"
+                            
                             structured_alerts.append({
-                                'icon': '🎯', 'type': '監控買進提示', 'name': name,
+                                'icon': alert_icon, 'type': alert_type, 'name': name,
                                 'close': f"{current_price:.2f}",
                                 'line2': f"買進目標價: {target_price:.2f}",
-                                'desc': "已達大波段安全安全邊際，建議分批佈局。"
+                                'desc': alert_desc
                             })
-                            status_str = "🎯 已達買點"
+                            status_str = "🔄 建議加碼" if is_already_owned else "🎯 已達買點"
                         else:
                             status_str = f"溢價 {diff_pct:.1f}%"
 
@@ -544,6 +550,10 @@ class StrategyOrchestrator:
                             _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
                             latest_idx = df_idx.iloc[-1]
                             k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
+                            
+                        # 如果是已被排除的庫存股，不重複在綜合面板列出第二行監控資訊
+                        if is_already_owned:
+                            continue
                             
                         stock_res = {
                             'name': name, 'id': s_id, 'type': '監控股', 'close': current_price,

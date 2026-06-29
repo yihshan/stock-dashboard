@@ -58,12 +58,10 @@ def clean_price(val: Any) -> float:
 
 
 def clean_stock_id(val: Any) -> str:
-    """進階清洗代號：補足 ETF 與特定個股遺失的前導零 (如 56 -> 0056)"""
     if pd.isna(val): return ""
     s = str(val).strip()
     s = re.sub(r'[="\'\s]', '', s)
     s = s.split('.')[0]
-    # 如果是 4 位以下的純數字（如 56, 919），自動補足前導零至 4 位或 5 位（如 0056）
     if s.isdigit() and len(s) < 4:
         return s.zfill(4)
     return s
@@ -109,7 +107,6 @@ class DateDataParser:
 
 
 class StockDataRepository:
-    """終極安全版資料庫：防止跨檔案變數污染，支援櫃買中心特殊日期欄位"""
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.report_date = str(date.today())
@@ -126,7 +123,7 @@ class StockDataRepository:
             date_match = re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(latest_file))
             if date_match: self.report_date = date_match.group(1)
 
-        logger.info(f"💾 正在解析 {len(csv_files)} 個政府網站歷史收盤 CSV (防變數污染與櫃買欄位擴充解鎖)...")
+        logger.info(f"💾 正在解析 {len(csv_files)} 個政府網站歷史收盤 CSV...")
         raw_data_list = []
         
         for file_path in csv_files:
@@ -135,12 +132,10 @@ class StockDataRepository:
                 try: df = pd.read_csv(file_path, encoding='utf-8-sig')
                 except: df = pd.read_csv(file_path, encoding='cp950')
                 
-                # 🟢 修正核心 1：每次迭代檔案時，必須將欄位定位指標初始化清空，防止變數跨檔案交叉污染！
                 date_col, id_col, name_col, close_col, high_col, low_col = None, None, None, None, None, None
                 
                 for col in df.columns:
                     c = str(col).strip()
-                    # 🟢 修正核心 2：擴充時間欄位匹配條件，納入櫃買中心的 "年月日" 與 "成交日期"
                     if any(x in c for x in ['日期', 'Date', '年月日', '成交日期']): date_col = col
                     if any(x in c for x in ['證券代號', '股票代號', '代號', 'Code', '證券編號']): id_col = col
                     if any(x in c for x in ['證券名稱', '股票名稱', '名稱', 'Name']): name_col = col
@@ -276,7 +271,7 @@ class NotificationService:
 
         if alerts:
             alert_html = (
-                "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px;'>"
+                "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px;'> "
                 "<h3 style='color: #dd6b20; font-size: 18px; margin-top: 0; margin-bottom: 15px;'>⚠️ 智慧多因子策略買賣觸發提示</h3>"
                 "<ul style='list-style-type: disc; padding-left: 20px; line-height: 1.8; color: #2d3748; font-size: 14px;'>"
             )
@@ -432,25 +427,27 @@ class StrategyOrchestrator:
                 inv_df = pd.read_excel(INVENTORY_FILE)
                 updated_rows = []
                 
+                # 🟢 修正核心：全面實施「庫存 Excel 欄位智慧模糊對齊」，徹底擊碎 '股票名稱' KeyError
+                inv_name_col = next((c for c in inv_df.columns if '名稱' in str(c) or '股票' in str(c)), inv_df.columns[0])
+                inv_id_col = next((c for c in inv_df.columns if '代號' in str(c) or 'Code' in str(c)), None)
+                inv_shares_col = next((c for c in inv_df.columns if '股數' in str(c) or '張數' in str(c)), None)
+                inv_cost_col = next((c for c in inv_df.columns if '成本' in str(c) or '價位' in str(c)), None)
+                
                 inv_id_map = {}
-                if '股票名稱' in inv_df.columns and '股票代號' in inv_df.columns:
-                    inv_id_map = pd.Series(inv_df['股票代號'].astype(str).values, index=inv_df['股票名稱'].astype(str)).to_dict()
-                elif id_col and '股票名稱' in inv_df.columns:
-                    id_candidates = [c for c in inv_df.columns if '代號' in str(c) or 'Code' in str(c)]
-                    if id_candidates:
-                        inv_id_map = pd.Series(inv_df[id_candidates[0]].astype(str).values, index=inv_df['股票名稱'].astype(str)).to_dict()
+                if inv_id_col:
+                    inv_id_map = pd.Series(inv_df[inv_id_col].astype(str).values, index=inv_df[inv_name_col].astype(str)).to_dict()
 
-                for name, group in inv_df.groupby('股票名稱'):
+                for name, group in inv_df.groupby(inv_name_col):
                     name = str(name).strip()
-                    total_shares = group['股數'].sum()
+                    total_shares = group[inv_shares_col].sum() if inv_shares_col else 1
                     if total_shares <= 0: continue
                     
-                    avg_cost = (group['成本'] * group['股數']).sum() / total_shares
-                    trail_pct = group['移動停利百分比(%)'].dropna().head(1).values
+                    avg_cost = (group[inv_cost_col] * group[inv_shares_col]).sum() / total_shares if inv_cost_col and inv_shares_col else 0.0
+                    trail_pct = group['移動停利百分比(%)'].dropna().head(1).values if '移動停利百分比(%)' in inv_df.columns else []
                     trail_pct = float(trail_pct[0]) if len(trail_pct) > 0 and not pd.isna(trail_pct[0]) else 15.0
                     base_stop = avg_cost 
                     
-                    highest_record = group['波段最高價'].dropna().head(1).values
+                    highest_record = group['波段最高價'].dropna().head(1).values if '波段最高價' in inv_df.columns else []
                     highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
                     
                     s_id_target = clean_stock_id(inv_id_map.get(name, ""))
@@ -517,9 +514,9 @@ class StrategyOrchestrator:
                     
                     for _, row in group.iterrows():
                         row_copy = row.copy()
-                        row_copy['移動停利百分比(%)'] = trail_pct
-                        row_copy['波段最高價'] = highest_price
-                        row_copy['保本停損價'] = base_stop
+                        if '移動停利百分比(%)' in inv_df.columns: row_copy['移動停利百分比(%)'] = trail_pct
+                        if '波段最高價' in inv_df.columns: row_copy['波段最高價'] = highest_price
+                        if '保本停損價' in inv_df.columns: row_copy['保本停損價'] = base_stop
                         updated_rows.append(row_copy)
                 pd.DataFrame(updated_rows).to_excel(INVENTORY_FILE, index=False)
             except Exception as e: logger.error(f"庫存智慧風控計算失敗: {e}")

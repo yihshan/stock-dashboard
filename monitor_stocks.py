@@ -32,7 +32,7 @@ try:
     import config
     import yfinance as yf
 except ImportError as e:
-    logger.critical(f"缺少必要的核心模組: {e}")
+    logger.critical(f"缺少必要的核心模組或設定檔: {e}")
     sys.exit(1)
 
 try:
@@ -45,7 +45,7 @@ BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 
-# 🟢 全域大腦核心矩陣（包含今明兩年股利與殖利率）
+# 🟢 全域核心大腦：2026-2027 預估股利與要求殖利率自適應矩陣
 DIVIDEND_PRESETS = {
     '2330': {'name': '台積電', 'div_2026': 36.0, 'div_2027': 44.0, 'target_yield': 1.8},  
     '2308': {'name': '台達電', 'div_2026': 26.0, 'div_2027': 34.0, 'target_yield': 1.8},  
@@ -147,7 +147,7 @@ class StockDataRepository:
             if date_match: self.report_date = date_match.group(1)
 
         raw_data_list = []
-        # 🟢 修正核心 1：強制完整讀取並串接目錄下所有 CSV 歷史檔案，確保時間軸天數充足！
+        # 🟢 修正核心 1：強制完整串接目錄下所有 CSV 歷史檔案，確保時間軸天數充足！
         for file_path in csv_files:
             file_date = DateDataParser.extract_date_from_filename(os.path.basename(file_path))
             try:
@@ -192,7 +192,7 @@ class StockDataRepository:
         target_id = clean_stock_id(stock_id)
         target_name = clean_stock_name(stock_name)
         
-        # 🟢 修正核心 2：精準分離代號與名稱查找路徑，徹底根絕錯置 Bug
+        # 🟢 修正核心 2：精準分離代號與名稱查找路徑，徹底根絕交叉對齊錯置的 Bug
         if target_id:
             df_res = self.master_df[self.master_df['id'] == target_id]
         else:
@@ -204,14 +204,13 @@ class StockDataRepository:
 class MarketIndicatorService:
     @staticmethod
     def calculate_kd9(df: pd.DataFrame) -> pd.DataFrame:
-        # 🟢 修正核心 3：防空機制。若天數嚴重不足，自動給予平滑基底值，徹底在表格上消滅 "nan"
+        # 🟢 修正核心 3：防空機制。若歷史天數嚴重不足，自動給予平滑基底值，徹底在表格上消滅 "nan"
         if len(df) < 2:
             df = df.copy()
             df['K'], df['D'] = 50.0, 50.0
             return df
             
         df = df.sort_values('Date').reset_index(drop=True)
-        # min_periods=1 允許在歷史初期天數不足 9 天時自動向後相容計算，免除 nan 污染
         df['L9'] = df['Low'].rolling(window=9, min_periods=1).min()
         df['H9'] = df['High'].rolling(window=9, min_periods=1).max()
         denom = df['H9'] - df['L9']
@@ -265,33 +264,45 @@ class NotificationService:
         lines = [f"{a['icon']} [{a['type']}] {a['name']}\n- 今日收盤: {a['close']}\n- {a['line2']}\n- 說明: {a['desc']}" for a in alerts]
         send_line_message(getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', ''), getattr(config, 'LINE_USER_ID', ''), f"\n📊 【台股雙多智慧策略決策報告】\n基準日: {report_date}\n" + "\n------------\n".join(lines))
 
-    def send_html_email(self, report_date: str, market_text: str, alerts: List[Dict[str, str]], all_stocks: List[Dict[str, Any]]) -> None:
+    def send_html_email(self, report_date: str, market_text: str, alerts: List[Dict[str, str]], all_stocks: List[Dict[str, Any]], global_stock_pool: Dict[str, Any]) -> None:
         msg = MIMEMultipart()
         msg['Subject'] = f"📊 台股雙多智慧策略決策報告與診斷總覽 - {report_date}"
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
+        # 🟢 修正核心 4：徹底解鎖！將「行動邏輯路徑」從寫死字串改為動態橫向核對大腦
         preset_matrix_rows = ""
         for s_id, cfg in DIVIDEND_PRESETS.items():
             avg_div = (cfg['div_2026'] + cfg['div_2027']) / 2
             calc_target = avg_div / (cfg['target_yield'] / 100)
+            
+            # 即時動態穿透審查該資產是否在現有持股庫存中
+            is_owned = (cfg['name'] in global_stock_pool)
+            if is_owned:
+                path_desc = "<span style='color:#3182ce; font-weight:bold;'>路徑 2：現價 ≦ 股利估值買點 (有持股)</span><br><small style='color:#718096;'>判定為核心資產 ➜ 啟動大波段逢低加碼路徑</small>"
+                defense_desc = "🛡️ 多頭環境下享智慧緩衝防護網"
+            else:
+                path_desc = "<span style='color:#dd6b20;'>路徑 1：現價 ≦ 股利估值買點 (無持股)</span><br><small style='color:#718096;'>判定為新觀察標的 ➜ 啟動安全邊際分批佈局</small>"
+                defense_desc = "🛡️ 空頭市場全面啟動鐵律停損風控"
+
             preset_matrix_rows += (
                 f"<tr style='border-bottom: 1px solid #e2e8f0;'>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center;'><b>{cfg['name']}</b><br><small style='color:#718096;'>{s_id}</small></td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center;'>{cfg['div_2026']:.1f}元</td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2027']:.1f}元</td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center; color:#dd6b20;'>{cfg['target_yield']:.2f}%</td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right; font-weight:bold; color:#b7791f;'>{calc_target:.1f}</td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; font-size:12px; color:#4a5568;'>現價 ≦ 股利買點觸發加碼或佈局</td>"
+                f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:center; background-color:#f7fafc;'><b>{cfg['name']}</b><br><small style='color:#718096;'>{s_id}</small></td>"
+                f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2026']:.1f}元</td>"
+                f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2027']:.1f}元</td>"
+                f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:center; font-weight:bold; color:#e53e3e;'>{cfg['target_yield']:.2f}%</td>"
+                f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:right; font-weight:bold; color:#b7791f; background-color:#fffaf0;'>{calc_target:.1f}</td>"
+                f"<td style='padding:10px; border:1px solid #e2e8f0; font-size:12px;'>{path_desc}</td>"  
+                f"<td style='padding:10px; border:1px solid #e2e8f0; font-size:12px; color:#e53e3e;'>{defense_desc}</td>"
                 f"</tr>"
             )
         
         dividend_table_html = (
             f"<div style='margin-bottom: 30px; background-color: #fff; padding: 18px; border: 2px solid #2b6cb0; border-radius: 8px;'>"
-            f"<h3 style='color: #2b6cb0; margin-top: 0; margin-bottom: 14px;'>📋 2026-2027 智慧股利估值與策略綜合參數面板</h3>"
+            f"<h3 style='color: #2b6cb0; margin-top: 0; margin-bottom: 14px;'>📋 2026-2027 智慧股利估值與策略決策動態路徑綜合面板</h3>"
             f"<table style='width:100%; border-collapse:collapse; font-size:13px; border: 1px solid #e2e8f0;'>"
             f"<thead><tr style='background-color: #2b6cb0; color: white;'>"
-            f"<th style='padding:10px;'>股票名稱</th><th style='padding:10px;'>2026配息</th><th style='padding:10px;'>2027配息</th><th style='padding:10px;'>要求殖利率</th><th style='padding:10px;'>推算目標價</th><th style='padding:10px;'>行動邏輯路徑</th>"
+            f"<th style='padding:10px;'>股票名稱</th><th style='padding:10px;'>2026配息</th><th style='padding:10px;'>2027配息</th><th style='padding:10px;'>要求殖利率</th><th style='padding:10px;'>推算目標價</th><th style='padding:10px;'>採取行動邏輯路徑 (動態)</th><th style='padding:10px;'>大盤聯動機制</th>"
             f"</tr></thead><tbody>{preset_matrix_rows}</tbody></table></div>"
         )
 
@@ -360,7 +371,7 @@ class StrategyOrchestrator:
                     current_price = latest['Close']
                     avg_cost = group[inv_cost_col].mean() if inv_cost_col else current_price
                     
-                    # 🟢 修正核心 4：精準最高價。以買入後的歷史最大收盤價為準；防範空值誤判
+                    # 🟢 修正核心 5：移動停利精準校正。以買入後的歷史最大收盤價為準；防範空值誤判
                     buy_date = DateDataParser.parse_generic_date(group[inv_date_col].iloc[0]) if inv_date_col else None
                     if buy_date:
                         post_buy_df = hist_df[hist_df['Date'] >= buy_date]
@@ -373,7 +384,7 @@ class StrategyOrchestrator:
                     status_str = "✅ 持股安全"
                     if current_price <= avg_cost:
                         if is_bull_market:
-                            structured_alerts.append({'icon': '🔄', 'type': '智慧緩衝：暫緩停損', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"成本: {avg_cost:.2f}", 'desc': "多頭環境良性回檔，建議暫緩盲目砍單。"})
+                            structured_alerts.append({'icon': '🔄', 'type': '智慧緩衝：暫緩停損', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"成本: {avg_cost:.2f}", 'desc': "大盤加權指數處於強勢多頭格局，此回檔建議暫緩盲目砍單。"})
                             status_str = "🔄 智慧緩衝"
                         else:
                             structured_alerts.append({'icon': '🛑', 'type': '鐵律清倉停損', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"成本: {avg_cost:.2f}", 'desc': "大盤走空，請嚴守資金紀律全數清倉避險！"})
@@ -421,7 +432,6 @@ class StrategyOrchestrator:
                         target_price = current_price * 0.85
                         status_str = "溢價 17.6%"
                     
-                    # 🟢 修正核心 5：精準雙向對齊。移除干擾過濾，確保已持股資產正確走入加碼路徑
                     is_already_owned = (c_name in global_stock_pool)
                     
                     if current_price <= target_price and c_name not in triggered_exit_stocks:
@@ -442,8 +452,9 @@ class StrategyOrchestrator:
                     })
             except Exception as e: logger.error(f"監控觀察模組執行失敗: {e}")
 
+        # 🟢 修正核心 6：將完整的 global_stock_pool 作為橫向審計指標傳遞給 HTML 生成器
         if all_stocks_output:
-            self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output)
+            self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output, global_stock_pool)
 
 if __name__ == "__main__":
     orchestrator = StrategyOrchestrator()

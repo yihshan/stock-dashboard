@@ -102,7 +102,7 @@ class DateDataParser:
 
 
 class StockDataRepository:
-    """資料訪問層：對齊 Dashboard 規格，全面載入資料夾內所有 CSV，確保歷史天數縱向完整載入"""
+    """資料訪問層：優化歷史大檔案讀取，落實行級動態日期隔離，確保時間序列縱向完整"""
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.report_date = str(date.today())
@@ -143,11 +143,13 @@ class StockDataRepository:
                 
                 if 'close' not in col_map: continue
                     
-                final_date = file_date
                 for _, row in df.iterrows():
-                    if not final_date and 'date' in col_map:
-                        final_date = DateDataParser.parse_generic_date(row[col_map['date']])
-                    if not final_date: continue
+                    # 🟢 修正核心：每一行都必須重設 row_date，絕不可拿第一行鎖死後續行
+                    row_date = file_date
+                    if not row_date and 'date' in col_map:
+                        row_date = DateDataParser.parse_generic_date(row[col_map['date']])
+                    
+                    if not row_date: continue
                         
                     raw_id = str(row[col_map['id']]).replace('"', '').strip() if 'id' in col_map else ""
                     s_id = raw_id.split('.')[0] if raw_id else ""
@@ -164,7 +166,7 @@ class StockDataRepository:
                     if pd.isna(h_val): h_val = c_val
                     if pd.isna(l_val): l_val = c_val
                     
-                    raw_data_list.append({'id': s_id, 'name': s_name, 'Date': final_date, 'Close': c_val, 'High': h_val, 'Low': l_val})
+                    raw_data_list.append({'id': s_id, 'name': s_name, 'Date': row_date, 'Close': c_val, 'High': h_val, 'Low': l_val})
             except Exception as e: continue
                 
         if raw_data_list:
@@ -279,7 +281,6 @@ class NotificationService:
                 "<h3 style='color: #dd6b20; margin-top: 0;'>⚠️ 智慧多因子策略買賣觸發提示</h3>"
                 "<ul style='padding-left: 20px; line-height: 1.6; color: #2d3748;'>"
             )
-            # 🟢 語法錯誤修正核心：將 replace 邏輯徹底移出 f-string 的大括號內部
             for act in alerts:
                 act_br = act.replace('\n', '<br>')
                 alert_html += f"<li style='margin-bottom: 8px;'>{act_br}</li>"
@@ -308,16 +309,23 @@ class NotificationService:
             if "🎯" in s['status'] or "🛑" in s['status']: status_style = "color:red; font-weight:bold;"
             elif "⚠️" in s['status'] or "🔄" in s['status']: status_style = "color:#d69e2e; font-weight:bold;"
 
+            s_name = s['name']
+            s_id = s['id']
+            s_type = s['type']
+            s_close = f"{s['close']:.2f}"
+            s_target_or_cost = s['target_or_cost']
+            s_status = s['status']
+
             table_rows += (
                 f"<tr>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><b>{s['name']}</b><br><small style='color:#718096;'>{s['id']}</small></td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><span style='background-color:{type_bg}; color:{type_color}; padding:3px 8px; border-radius:4px; font-size:12px;'>{s['type']}</span></td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'><b>{s['close']:.2f}</b></td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><b>{s_name}</b><br><small style='color:#718096;'>{s_id}</small></td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><span style='background-color:{type_bg}; color:{type_color}; padding:3px 8px; border-radius:4px; font-size:12px;'>{s_type}</span></td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'><b>{s_close}</b></td>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:right; {k_style}'>{k_val}</td>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{d_val}</td>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{osc_val}</td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:center; font-size:13px;'>{s['target_or_cost']}</td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:center; font-size:13px; {status_style}'>{s['status']}</td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:center; font-size:13px;'>{s_target_or_cost}</td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:center; font-size:13px; {status_style}'>{s_status}</td>"
                 f"</tr>"
             )
             
@@ -393,7 +401,9 @@ class StrategyOrchestrator:
                         target_price = float(row['買進目標價'])
                         diff_pct = ((current_price - target_price) / target_price) * 100
                         if current_price <= target_price:
-                            strategy_alerts.append(f"🎯 [監控買進提示] {name}\n  - 今日收盤: {current_price:.2f}\n  - 買進目標價: {target_price:.2f}\n  - 已達大波段安全安全邊際，建議分批佈局。")
+                            c_p_str = f"{current_price:.2f}"
+                            t_p_str = f"{target_price:.2f}"
+                            strategy_alerts.append(f"🎯 [監控買進提示] {name} | 今日收盤: {c_p_str} | 買進目標價: {t_p_str} | 已達大波段安全安全邊際，建議分批佈局。")
                             status_str = "🎯 已達買點"
                         else:
                             status_str = f"溢價 {diff_pct:.1f}%"
@@ -456,15 +466,20 @@ class StrategyOrchestrator:
                     if current_price > highest_price: highest_price = current_price
                     sell_trigger_price = highest_price * (1 - (trail_pct / 100))
                     
+                    c_p_str = f"{current_price:.2f}"
+                    a_c_str = f"{avg_cost:.2f}"
+                    h_p_str = f"{highest_price:.2f}"
+                    s_t_str = f"{sell_trigger_price:.2f}"
+
                     if current_price <= base_stop:
                         if is_bull_market:
-                            strategy_alerts.append(f"🔄 [智慧緩衝：暫緩停損] {name}\n  - 今日收盤: {current_price:.2f}\n  - 平均成本: {avg_cost:.2f}\n  - 說明：大盤加權指數處於強勢多頭格局，此回檔建議暫緩盲目砍單。")
+                            strategy_alerts.append(f"🔄 [智慧緩衝：暫緩停損] {name} | 今日收盤: {c_p_str} | 平均成本: {a_c_str} | 說明：大盤加權指數處於強勢多頭格局，此回檔建議暫緩盲目砍單。")
                             status_str = "🔄 智慧緩衝"
                         else:
-                            strategy_alerts.append(f"🛑 [鐵律清倉停損] {name}\n  - 今日收盤: {current_price:.2f}\n  - 平均成本: {avg_cost:.2f}\n  - 說明：大盤確認走空，請嚴守資金紀律全數清倉！")
+                            strategy_alerts.append(f"🛑 [鐵律清倉停損] {name} | 今日收盤: {c_p_str} | 平均成本: {a_c_str} | 說明：大盤確認走空，請嚴守資金紀律全數清倉！")
                             status_str = "🛑 鐵律停損"
                     elif current_price <= sell_trigger_price:
-                        strategy_alerts.append(f"⚠️ [庫存移動停利] {name}\n  - 今日收盤: {current_price:.2f}\n  - 波段最高: {highest_price:.2f}\n  - 觸發移動停利線 ({sell_trigger_price:.2f})，建議獲利落袋。")
+                        strategy_alerts.append(f"⚠️ [庫存移動停利] {name} | 今日收盤: {c_p_str} | 波段最高: {h_p_str} | 觸發移動停利線 ({s_t_str})，建議獲利落袋。")
                         status_str = "⚠️ 移動停利"
 
                     k_val, d_val, osc_val = np.nan, np.nan, np.nan

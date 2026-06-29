@@ -90,7 +90,7 @@ def clean_stock_name(val: Any) -> str:
     s = str(val).strip()
     s = re.sub(r'\(.*?\)', '', s)
     s = re.sub(r'\[.*?\]', '', s)
-    return s.replace(' ', '').replace(' ', '')
+    return s.replace(' ', '').replace('　', '')
 
 
 class DateDataParser:
@@ -200,7 +200,7 @@ class StockDataRepository:
         else:
             cond_exact = (self.master_df['name'] == target_name)
             cond_remap = (self.master_df['name'] == f"{target_name}光電") | (self.master_df['name'] == f"{target_name}科技")
-            df_res = self.master_df[cond_exact | remap]
+            df_res = self.master_df[cond_exact | cond_remap]
             
         if df_res.empty: return pd.DataFrame()
         
@@ -286,10 +286,8 @@ class NotificationService:
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
-        # 🟢 修正核心：將「智慧股利估值參數」橫向融合成「2026-2027 今明兩年智慧股利估值參數基準面板」
+        # 🟢 智慧型股利估值參數與策略邏輯路徑橫向融合大面板
         preset_matrix_rows = ""
-        
-        # 內建靜態路徑與邏輯對照表，直接在參數表面板呈現，徹底白箱化
         logic_desc_map = {
             '2330': {'type': '核心成長股', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '多頭環境下享智慧緩衝保護'},
             '2308': {'type': '核心設備股', 'trigger_buy': '現價 ≦ 股利估值買點 (無持股)', 'trigger_add': '現價 ≦ 股利估值買點 (有持股)', 'defense': '多頭環境下享智慧緩衝保護'},
@@ -301,24 +299,16 @@ class NotificationService:
         }
 
         for s_id, cfg in DIVIDEND_PRESETS.items():
-            # 計算該項目的估值買點作為參考
             avg_div = (cfg['div_2026'] + cfg['div_2027']) / 2
             calc_target = avg_div / (cfg['target_yield'] / 100)
-            
-            # 獲利內建策略矩陣描述或套用備援
-            l_cfg = logic_desc_map.get(s_id, {
-                'type': '常規追蹤股', 
-                'trigger_buy': '現價 ≦ 股利估值目標價', 
-                'trigger_add': '現價 ≦ 估值加倉區間', 
-                'defense': '風控優先全面防守'
-            })
+            l_cfg = logic_desc_map.get(s_id, {'type': '常規追蹤股', 'trigger_buy': '現價 ≦ 股利估值目標價', 'trigger_add': '現價 ≦ 估值加倉區間', 'defense': '風控優先全面防守'})
             
             preset_matrix_rows += (
-                f"<tr style='border-bottom: 1px solid #e2e8f0;'>"
+                f"<tr style='border-bottom: 1px solid #e2e8f0;'> "
                 f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center; background-color:#f7fafc;'><b>{cfg['name']}</b><br><small style='color:#718096;'>{s_id}</small></td>"
                 f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center;'><span style='background-color:#ebf8ff; color:#2b6cb0; padding:2px 6px; border-radius:4px; font-size:12px;'>{l_cfg['type']}</span></td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right; font-weight:bold; color:#2d3748;'>{cfg['div_2026']:.1f} 元</td>"
-                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right; font-weight:bold; color:#2d3748;'>{cfg['div_2027']:.1f} 元</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2026']:.1f} 元</td>"
+                f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2027']:.1f} 元</td>"
                 f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:center; font-weight:bold; color:#dd6b20;'>{cfg['target_yield']:.2f}%</td>"
                 f"<td style='padding:8px 10px; border:1px solid #e2e8f0; text-align:right; background-color:#fffaf0; font-weight:bold; color:#b7791f;'>{calc_target:.1f}</td>"
                 f"<td style='padding:8px 10px; border:1px solid #e2e8f0; font-size:12px; color:#4a5568;'>1. {l_cfg['trigger_buy']}<br>2. {l_cfg['trigger_add']}</td>"
@@ -401,7 +391,7 @@ class NotificationService:
         html = (
             f"<html><body style=\"font-family: 'Microsoft JhengHei', sans-serif; padding: 20px;\">"
             f"<h2 style=\"color: #1a365d;\">📊 每日台股策略監控與技術指標自動彙整</h2>"
-            f"{dividend_table_html}"  # 🟢 置頂合併大面板核心：卡位成功！
+            f"{dividend_table_html}"  
             f"<p style='color: #4a5568;'><b>數據基準日：</b>{report_date}</p>"
             f"<p style='background-color: #edf2f7; padding: 10px; border-radius: 4px; color: #4a5568;'>🌐 <b>總體環境監測：</b>{market_text}</p>"
             f"{alert_html}"  

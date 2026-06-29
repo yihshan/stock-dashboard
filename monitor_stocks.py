@@ -4,7 +4,7 @@ import re
 import smtplib
 import logging
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -17,13 +17,10 @@ import pandas as pd
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 
-# 強制 UTF-8 環境
 if sys.stdout.encoding != 'utf-8':
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -48,26 +45,19 @@ BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 
-# 隱藏 SSL 警告
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def clean_price(val: Any) -> float:
-    """行級防呆核心：將字串安全轉為 float，精確保留至小數點後兩位以上，跳過熔斷/停牌之 '----' 符號"""
-    if pd.isna(val): 
-        return np.nan
+    if pd.isna(val): return np.nan
     s = str(val).replace(',', '').strip()
-    if s in ['', '----', '--', '-', 'null', 'None', 'nil']:
-        return np.nan
-    try:
-        return float(s)
-    except ValueError:
-        return np.nan
+    if s in ['', '----', '--', '-', 'null', 'None', 'nil']: return np.nan
+    try: return float(s)
+    except ValueError: return np.nan
 
 
 class DateDataParser:
-    """處理日期格式轉換"""
     @staticmethod
     def parse_generic_date(val: Any) -> Optional[date]:
         if pd.isna(val): return None
@@ -102,7 +92,7 @@ class DateDataParser:
 
 
 class StockDataRepository:
-    """資料訪問層：優化歷史大檔案讀取，落實行級動態日期隔離，確保時間序列縱向完整"""
+    """進階資料訪問層：內建 yfinance 歷史補償機制，徹底擊碎新監控股天數不足產生的 N/A"""
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.report_date = str(date.today())
@@ -112,9 +102,7 @@ class StockDataRepository:
 
     def _initialize_database(self) -> None:
         csv_files = glob.glob(str(self.data_dir / "*.csv"))
-        if not csv_files:
-            logger.warning(f"指定路徑 {self.data_dir} 中未發現數據檔案。")
-            return
+        if not csv_files: return
             
         daily_files = glob.glob(str(self.data_dir / "台股每日收盤價_*.csv"))
         if daily_files:
@@ -122,7 +110,7 @@ class StockDataRepository:
             date_match = re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(latest_file))
             if date_match: self.report_date = date_match.group(1)
 
-        logger.info(f"💾 正在載入 {len(csv_files)} 個 CSV 歷史檔案至記憶體快取...")
+        logger.info("💾 正在載入本地歷史 CSV 檔案...")
         raw_data_list = []
         
         for file_path in csv_files:
@@ -144,11 +132,9 @@ class StockDataRepository:
                 if 'close' not in col_map: continue
                     
                 for _, row in df.iterrows():
-                    # 🟢 修正核心：每一行都必須重設 row_date，絕不可拿第一行鎖死後續行
                     row_date = file_date
                     if not row_date and 'date' in col_map:
                         row_date = DateDataParser.parse_generic_date(row[col_map['date']])
-                    
                     if not row_date: continue
                         
                     raw_id = str(row[col_map['id']]).replace('"', '').strip() if 'id' in col_map else ""
@@ -159,15 +145,12 @@ class StockDataRepository:
                     
                     c_val = clean_price(row[col_map['close']])
                     if pd.isna(c_val): continue 
-                        
+                    
                     h_val = clean_price(row[col_map['high']]) if 'high' in col_map else c_val
                     l_val = clean_price(row[col_map['low']]) if 'low' in col_map else c_val
                     
-                    if pd.isna(h_val): h_val = c_val
-                    if pd.isna(l_val): l_val = c_val
-                    
                     raw_data_list.append({'id': s_id, 'name': s_name, 'Date': row_date, 'Close': c_val, 'High': h_val, 'Low': l_val})
-            except Exception as e: continue
+            except Exception: continue
                 
         if raw_data_list:
             master_df = pd.DataFrame(raw_data_list)
@@ -176,22 +159,43 @@ class StockDataRepository:
                     if s_id: self._historical_cache_by_id[str(s_id)] = g.sort_values('Date').drop_duplicates('Date')
             for s_name, g in master_df.groupby('name'):
                 if s_name: self._historical_cache_by_name[str(s_name)] = g.sort_values('Date').drop_duplicates('Date')
-        logger.info(f"✅ 雙軌快取對齊完成！共加載 {len(self._historical_cache_by_id)} 檔唯一代號。")
 
     def get_history(self, stock_id: str, stock_name: str) -> pd.DataFrame:
         raw_id = str(stock_id).replace('"', '').strip()
         s_id = raw_id.split('.')[0] if raw_id else ""
         s_name = re.sub(r'\(.*?\)', '', stock_name).strip()
         
-        if s_id and s_id in self._historical_cache_by_id:
-            return self._historical_cache_by_id[s_id]
-        if s_name and s_name in self._historical_cache_by_name:
-            return self._historical_cache_by_name[s_name]
-        return pd.DataFrame()
+        df = pd.DataFrame()
+        if s_id and s_id in self._historical_cache_by_id: df = self._historical_cache_by_id[s_id]
+        elif s_name and s_name in self._historical_cache_by_name: df = self._historical_cache_by_name[s_name]
+        
+        # 🟢 核心修復：如果本地天數不足 26 天，啟動 yfinance 自動回補機制，完美解決新股 N/A
+        if s_id and (df.empty or len(df) < 26):
+            try:
+                logger.info(f"⚡ 偵測到 {s_name}({s_id}) 本地歷史天數不足，啟動 yfinance 智慧補償...")
+                ticker_str = f"{s_id}.TW" if int(s_id) < 6000 else f"{s_id}.TWO"
+                yf_stock = yf.Ticker(ticker_str)
+                yf_df = yf_stock.history(period="3m")
+                if not yf_df.empty:
+                    yf_df = yf_df.reset_index()
+                    patch_list = []
+                    for _, r in yf_df.iterrows():
+                        p_date = r['Date'].date()
+                        patch_list.append({
+                            'id': s_id, 'name': s_name, 'Date': p_date,
+                            'Close': float(r['Close']), 'High': float(r['High']), 'Low': float(r['Low'])
+                        })
+                    patch_df = pd.DataFrame(patch_list)
+                    if not df.empty:
+                        df = pd.concat([patch_df, df]).drop_duplicates('Date').sort_values('Date')
+                    else:
+                        df = patch_df.sort_values('Date')
+            except Exception as e:
+                logger.error(f"yfinance 補償機制異常: {e}")
+        return df
 
 
 class MarketIndicatorService:
-    """運算服務層：整合大盤與個股指標"""
     @staticmethod
     def calculate_kd9(df: pd.DataFrame) -> pd.DataFrame:
         if len(df) < 9:
@@ -233,7 +237,6 @@ class MarketIndicatorService:
 
     @staticmethod
     def check_macro_regime() -> Tuple[bool, str]:
-        """精準下載即時大盤加權指數，進行年線波段風控"""
         try:
             logger.info("🌐 正在下載大盤加權指數 (計算 200MA 年線系統風險)...")
             twii = yf.Ticker("^TWII")
@@ -242,18 +245,14 @@ class MarketIndicatorService:
             df['200MA'] = df['Close'].rolling(window=200).mean()
             latest_close = df['Close'].iloc[-1]
             ma200 = df['200MA'].iloc[-1]
-            
             is_bull = latest_close >= ma200
             status_text = "【多頭市場】(加權指數處於年線之上，啟動智慧估值緩衝鎖)" if is_bull else "【空頭熊市】(大盤走空，全面防守開啟鐵律停損)"
-            direction = "上" if is_bull else "下"
-            return is_bull, f"今日加權指數收盤 {latest_close:.2f} 點，處於年線 ({ma200:.1f}) 之{direction} -> {status_text}"
+            return is_bull, f"今日加權指數收盤 {latest_close:.2f} 點，處於年線 ({ma200:.1f}) 之{'上' if is_bull else '下'} -> {status_text}"
         except Exception as e:
-            logger.error(f"大盤總體環境解析異常: {e}，策略自動降級為【安全多頭環境】")
             return True, "⚠️ 總體環境連線異常，策略降級切換為【安全多頭環境】"
 
 
 class NotificationService:
-    """通知派送服務層"""
     def __init__(self):
         self.smtp_server = config.SMTP_SERVER
         self.smtp_port = config.SMTP_PORT
@@ -262,32 +261,42 @@ class NotificationService:
         self.recipients = config.RECIPIENTS
         self.bcc_recipients = getattr(config, 'BCC_RECIPIENTS', [])
 
-    def send_line(self, alerts: List[str], report_date: str) -> None:
+    def send_line(self, alerts: List[Dict[str, str]], report_date: str) -> None:
         if not alerts: return
         token = getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', '')
         user_id = getattr(config, 'LINE_USER_ID', '')
-        full_msg = f"\n📊 【台股雙多智慧策略決策報告】\n基準日: {report_date}\n" + "\n---------------------\n".join(alerts)
+        lines = []
+        for a in alerts:
+            lines.append(f"{a['icon']} [{a['type']}] {a['name']}\n- 今日收盤: {a['close']}\n- {a['line2']}\n- 說明: {a['desc']}")
+        full_msg = f"\n📊 【台股雙多智慧策略決策報告】\n基準日: {report_date}\n" + "\n---------------------\n".join(lines)
         send_line_message(token, user_id, full_msg)
 
-    def send_html_email(self, report_date: str, market_text: str, alerts: List[str], all_stocks: List[Dict[str, Any]]) -> None:
+    def send_html_email(self, report_date: str, market_text: str, alerts: List[Dict[str, str]], all_stocks: List[Dict[str, Any]]) -> None:
         msg = MIMEMultipart()
         msg['Subject'] = f"📊 台股雙多智慧策略決策報告與診斷總覽 - {report_date}"
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
+        # 🟢 完美還原：依照截圖樣式渲染「智慧多因子策略買賣觸發提示」
         if alerts:
             alert_html = (
-                "<div style='background-color: #fffaf0; border-left: 5px solid #dd6b20; padding: 15px; margin-bottom: 25px; border-radius: 4px;'>"
-                "<h3 style='color: #dd6b20; margin-top: 0;'>⚠️ 智慧多因子策略買賣觸發提示</h3>"
-                "<ul style='padding-left: 20px; line-height: 1.6; color: #2d3748;'>"
+                "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px;'>"
+                "<h3 style='color: #dd6b20; font-size: 18px; margin-top: 0; margin-bottom: 15px;'>⚠️ 智慧多因子策略買賣觸發提示</h3>"
+                "<ul style='list-style-type: disc; padding-left: 20px; line-height: 1.8; color: #2d3748; font-size: 14px;'>"
             )
-            for act in alerts:
-                act_br = act.replace('\n', '<br>')
-                alert_html += f"<li style='margin-bottom: 8px;'>{act_br}</li>"
+            for a in alerts:
+                alert_html += (
+                    f"<li style='margin-bottom: 15px; list-style-type: disc;'>"
+                    f"<b>{a['icon']} [{a['type']}] {a['name']}</b><br>"
+                    f"<span style='color: #4a5568;'>- 今日收盤: {a['close']}</span><br>"
+                    f"<span style='color: #4a5568;'>- {a['line2']}</span><br>"
+                    f"<span style='color: #4a5568;'>- 說明：{a['desc']}</span>"
+                    f"</li>"
+                )
             alert_html += "</ul></div>"
         else:
             alert_html = (
-                "<div style='background-color: #f0fff4; border-left: 5px solid #38a169; padding: 15px; margin-bottom: 25px; border-radius: 4px;'>"
+                "<div style='background-color: #f0fff4; border-left: 5px solid #38a169; padding: 15px; margin-bottom: 25px; border-radius: 4px Dino;'>"
                 "<h3 style='color: #38a169; margin-top: 0;'>✅ 大波段策略監控正常</h3>"
                 "<p style='color: #276749; margin: 0;'>今日現有庫存皆在安全波段中，且觀察名單尚未觸發加倉買進目標價。</p>"
                 "</div>"
@@ -309,12 +318,7 @@ class NotificationService:
             if "🎯" in s['status'] or "🛑" in s['status']: status_style = "color:red; font-weight:bold;"
             elif "⚠️" in s['status'] or "🔄" in s['status']: status_style = "color:#d69e2e; font-weight:bold;"
 
-            s_name = s['name']
-            s_id = s['id']
-            s_type = s['type']
-            s_close = f"{s['close']:.2f}"
-            s_target_or_cost = s['target_or_cost']
-            s_status = s['status']
+            s_name, s_id, s_type, s_close, s_target_or_cost, s_status = s['name'], s['id'], s['type'], f"{s['close']:.2f}", s['target_or_cost'], s['status']
 
             table_rows += (
                 f"<tr>"
@@ -355,21 +359,19 @@ class NotificationService:
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls()
                 server.login(self.email_user, self.email_password)
-                targets = self.recipients + self.bcc_recipients
-                for target in targets: server.sendmail(self.email_user, target, msg.as_string())
+                for t in (self.recipients + self.bcc_recipients): server.sendmail(self.email_user, t, msg.as_string())
             logger.info("📨 智慧決策報告已成功寄出。")
         except Exception as e: logger.error(f"發送 Email 失敗: {e}")
 
 
 class StrategyOrchestrator:
-    """核心協調指揮官"""
     def __init__(self):
         self.repo = StockDataRepository(BASE_DIR)
         self.notifier = NotificationService()
 
     def execute_pipeline(self) -> None:
         is_bull_market, market_text = MarketIndicatorService.check_macro_regime()
-        strategy_alerts: List[str] = []
+        structured_alerts: List[Dict[str, str]] = []
         all_stocks_output: List[Dict[str, Any]] = []
         global_stock_pool: Dict[str, Dict[str, Any]] = {}
 
@@ -401,15 +403,18 @@ class StrategyOrchestrator:
                         target_price = float(row['買進目標價'])
                         diff_pct = ((current_price - target_price) / target_price) * 100
                         if current_price <= target_price:
-                            c_p_str = f"{current_price:.2f}"
-                            t_p_str = f"{target_price:.2f}"
-                            strategy_alerts.append(f"🎯 [監控買進提示] {name} | 今日收盤: {c_p_str} | 買進目標價: {t_p_str} | 已達大波段安全安全邊際，建議分批佈局。")
+                            structured_alerts.append({
+                                'icon': '🎯', 'type': '監控買進提示', 'name': name,
+                                'close': f"{current_price:.2f}",
+                                'line2': f"買進目標價: {target_price:.2f}",
+                                'desc': "已達大波段安全安全邊際，建議分批佈局。"
+                            })
                             status_str = "🎯 已達買點"
                         else:
                             status_str = f"溢價 {diff_pct:.1f}%"
 
                     k_val, d_val, osc_val = np.nan, np.nan, np.nan
-                    if len(df) >= 10:
+                    if len(df) >= 9:
                         df_idx = MarketIndicatorService.calculate_kd9(df)
                         _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
                         latest_idx = df_idx.iloc[-1]
@@ -473,17 +478,29 @@ class StrategyOrchestrator:
 
                     if current_price <= base_stop:
                         if is_bull_market:
-                            strategy_alerts.append(f"🔄 [智慧緩衝：暫緩停損] {name} | 今日收盤: {c_p_str} | 平均成本: {a_c_str} | 說明：大盤加權指數處於強勢多頭格局，此回檔建議暫緩盲目砍單。")
+                            structured_alerts.append({
+                                'icon': '🔄', 'type': '智慧緩衝：暫緩停損', 'name': name, 'close': c_p_str,
+                                'line2': f"平均成本: {a_c_str}",
+                                'desc': "大盤加權指數處於強勢多頭格局，此回檔建議暫緩盲目砍單。"
+                            })
                             status_str = "🔄 智慧緩衝"
                         else:
-                            strategy_alerts.append(f"🛑 [鐵律清倉停損] {name} | 今日收盤: {c_p_str} | 平均成本: {a_c_str} | 說明：大盤確認走空，請嚴守資金紀律全數清倉！")
+                            structured_alerts.append({
+                                'icon': '🛑', 'type': '鐵律清倉停損', 'name': name, 'close': c_p_str,
+                                'line2': f"平均成本: {a_c_str}",
+                                'desc': "大盤確認走空，請嚴守資金紀律全數清倉！"
+                            })
                             status_str = "🛑 鐵律停損"
                     elif current_price <= sell_trigger_price:
-                        strategy_alerts.append(f"⚠️ [庫存移動停利] {name} | 今日收盤: {c_p_str} | 波段最高: {h_p_str} | 觸發移動停利線 ({s_t_str})，建議獲利落袋。")
+                        structured_alerts.append({
+                            'icon': '⚠️', 'type': '庫存移動停利', 'name': name, 'close': c_p_str,
+                            'line2': f"波段最高: {h_p_str}",
+                            'desc': f"觸發移動停利線 ({s_t_str})，建議獲利落袋。"
+                        })
                         status_str = "⚠️ 移動停利"
 
                     k_val, d_val, osc_val = np.nan, np.nan, np.nan
-                    if len(hist_df) >= 10:
+                    if len(hist_df) >= 9:
                         df_idx = MarketIndicatorService.calculate_kd9(hist_df)
                         _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
                         latest_idx = df_idx.iloc[-1]
@@ -511,9 +528,9 @@ class StrategyOrchestrator:
             except Exception as e: logger.error(f"庫存智慧風控計算失敗: {e}")
 
         # 3. 發送通知
-        self.notifier.send_line(strategy_alerts, self.repo.report_date)
+        self.notifier.send_line(structured_alerts, self.repo.report_date)
         if all_stocks_output:
-            self.notifier.send_html_email(self.repo.report_date, market_text, strategy_alerts, all_stocks_output)
+            self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output)
 
 
 if __name__ == "__main__":

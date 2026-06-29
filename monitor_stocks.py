@@ -28,9 +28,6 @@ if sys.stdout.encoding != 'utf-8':
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-# ==========================================
-# 🛑 核心配置與全域常數定義
-# ==========================================
 try:
     import config
     import yfinance as yf
@@ -48,26 +45,19 @@ BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 
-# 隱藏 SSL 警告
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def clean_price(val: Any) -> float:
-    """行級防呆核心：將字串安全轉為 float，精確保留至小數點後兩位以上，跳過熔斷/停牌之 '----' 符號"""
-    if pd.isna(val): 
-        return np.nan
+    if pd.isna(val): return np.nan
     s = str(val).replace(',', '').strip()
-    if s in ['', '----', '--', '-', 'null', 'None', 'nil']:
-        return np.nan
-    try:
-        return float(s)
-    except ValueError:
-        return np.nan
+    if s in ['', '----', '--', '-', 'null', 'None', 'nil']: return np.nan
+    try: return float(s)
+    except ValueError: return np.nan
 
 
 class DateDataParser:
-    """處理日期格式轉換"""
     @staticmethod
     def parse_generic_date(val: Any) -> Optional[date]:
         if pd.isna(val): return None
@@ -102,11 +92,12 @@ class DateDataParser:
 
 
 class StockDataRepository:
-    """資料訪問層：對齊 Dashboard 規格，全面載入資料夾內所有 CSV，確保歷史天數縱向完整載入"""
+    """系統整合升級版資料庫：內建智慧型名稱去污與雙向代號校正機制"""
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.report_date = str(date.today())
-        self._historical_cache: Dict[str, pd.DataFrame] = {}
+        self._historical_cache_by_id: Dict[str, pd.DataFrame] = {}
+        self._historical_cache_by_name: Dict[str, pd.DataFrame] = {}
         self._initialize_database()
 
     def _initialize_database(self) -> None:
@@ -148,12 +139,14 @@ class StockDataRepository:
                         final_date = DateDataParser.parse_generic_date(row[col_map['date']])
                     if not final_date: continue
                         
-                    # 【只針對證券代號進行字串化對齊，絕不干涉股價】
+                    # 1. 智慧去浮點化與格式化代號 (防止 6695.0 污染)
                     raw_id = str(row[col_map['id']]).replace('"', '').strip() if 'id' in col_map else ""
                     s_id = raw_id.split('.')[0] if raw_id else ""
-                    s_name = str(row[col_map['name']]).strip() if 'name' in col_map else ""
                     
-                    # 使用全防禦性數值清洗，精確還原浮點數股價
+                    # 2. 核心去污：剔除名稱內自帶的括號代號 (例如將 "竑騰(6695)" 智慧還原為 "竑騰")
+                    raw_name = str(row[col_map['name']]).strip() if 'name' in col_map else ""
+                    s_name = re.sub(r'\(.*?\)', '', raw_name).strip()
+                    
                     c_val = clean_price(row[col_map['close']])
                     if pd.isna(c_val): continue 
                         
@@ -164,29 +157,33 @@ class StockDataRepository:
                     if pd.isna(l_val): l_val = c_val
                     
                     raw_data_list.append({'id': s_id, 'name': s_name, 'Date': final_date, 'Close': c_val, 'High': h_val, 'Low': l_val})
-            except Exception as e:
-                logger.error(f"跳過嚴重損壞之單一檔案 {os.path.basename(file_path)}: {e}")
+            except Exception as e: continue
                 
         if raw_data_list:
             master_df = pd.DataFrame(raw_data_list)
+            # 建立雙軌制快取字典
             if 'id' in master_df.columns:
                 for s_id, g in master_df.groupby('id'):
-                    if s_id: self._historical_cache[str(s_id)] = g.sort_values('Date').drop_duplicates('Date')
+                    if s_id: self._historical_cache_by_id[str(s_id)] = g.sort_values('Date').drop_duplicates('Date')
             for s_name, g in master_df.groupby('name'):
-                if s_name: self._historical_cache[str(s_name)] = g.sort_values('Date').drop_duplicates('Date')
-        logger.info(f"✅ 快取加載成功！長線數據已安全移入記憶體。")
+                if s_name: self._historical_cache_by_name[str(s_name)] = g.sort_values('Date').drop_duplicates('Date')
+        logger.info(f"✅ 雙軌快取對齊完成！共加載 {len(self._historical_cache_by_id)} 檔唯一代號。")
 
     def get_history(self, stock_id: str, stock_name: str) -> pd.DataFrame:
+        """雙向安全檢索：代號第一優先，名稱去污後第二備援"""
         raw_id = str(stock_id).replace('"', '').strip()
         s_id = raw_id.split('.')[0] if raw_id else ""
         s_name = re.sub(r'\(.*?\)', '', stock_name).strip()
-        if s_id in self._historical_cache: return self._historical_cache[s_id]
-        if s_name in self._historical_cache: return self._historical_cache[s_name]
+        
+        if s_id and s_id in self._historical_cache_by_id:
+            return self._historical_cache_by_id[s_id]
+        if s_name and s_name in self._historical_cache_by_name:
+            return self._historical_cache_by_name[s_name]
         return pd.DataFrame()
 
 
 class MarketIndicatorService:
-    """運算服務層：整合大盤與個股指標"""
+    """運算服務層"""
     @staticmethod
     def calculate_kd9(df: pd.DataFrame) -> pd.DataFrame:
         if len(df) < 9:
@@ -228,7 +225,6 @@ class MarketIndicatorService:
 
     @staticmethod
     def check_macro_regime() -> Tuple[bool, str]:
-        """精準下載即時大盤加權指數，進行年線波段風控"""
         try:
             logger.info("🌐 正在下載大盤加權指數 (計算 200MA 年線系統風險)...")
             twii = yf.Ticker("^TWII")
@@ -237,11 +233,10 @@ class MarketIndicatorService:
             df['200MA'] = df['Close'].rolling(window=200).mean()
             latest_close = df['Close'].iloc[-1]
             ma200 = df['200MA'].iloc[-1]
-            
             is_bull = latest_close >= ma200
             status_text = "【多頭市場】(加權指數處於年線之上，啟動智慧估值緩衝鎖)" if is_bull else "【空頭熊市】(大盤走空，全面防守開啟鐵律停損)"
             direction = "上" if is_bull else "下"
-            return is_bull, f"今日加權指數收盤 {latest_close:.2f} 點，處於年線 ({ma200:.2f}) 之{direction} -> {status_text}"
+            return is_bull, f"今日加權指數收盤 {latest_close:.2f} 點，處於年線 ({ma200:.1f}) 之{direction} -> {status_text}"
         except Exception as e:
             logger.error(f"大盤總體環境解析異常: {e}，策略自動降級為【安全多頭環境】")
             return True, "⚠️ 總體環境連線異常，策略降級切換為【安全多頭環境】"
@@ -277,8 +272,7 @@ class NotificationService:
                 "<ul style='padding-left: 20px; line-height: 1.6; color: #2d3748;'>"
             )
             for act in alerts:
-                act_br = act.replace('\n', '<br>')
-                alert_html += f"<li style='margin-bottom: 8px;'>{act_br}</li>"
+                alert_html += f"<li style='margin-bottom: 8px;'>{act.replace('\n', '<br>')}</li>"
             alert_html += "</ul></div>"
         else:
             alert_html = (
@@ -304,7 +298,6 @@ class NotificationService:
             if "🎯" in s['status'] or "🛑" in s['status']: status_style = "color:red; font-weight:bold;"
             elif "⚠️" in s['status'] or "🔄" in s['status']: status_style = "color:#d69e2e; font-weight:bold;"
 
-            # 🟢 修正點：所有股價欄位統以 :.2f 格式化輸出，完美保留小數點二位跳動精確度
             table_rows += (
                 f"<tr>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><b>{s['name']}</b><br><small style='color:#718096;'>{s['id']}</small></td>"
@@ -417,6 +410,17 @@ class StrategyOrchestrator:
             try:
                 inv_df = pd.read_excel(INVENTORY_FILE)
                 updated_rows = []
+                
+                # 先提取庫存股票的專屬代號映射字典，杜絕代號傳空造成的盲查
+                inv_id_map = {}
+                if '股票名稱' in inv_df.columns and '股票代號' in inv_df.columns:
+                    inv_id_map = pd.Series(inv_df['股票代號'].astype(str).values, index=inv_df['股票名稱'].astype(str)).to_dict()
+                elif id_col and '股票名稱' in inv_df.columns:
+                    # 容錯處理：如果欄位名稱不叫股票代號
+                    id_candidates = [c for c in inv_df.columns if '代號' in str(c) or 'Code' in str(c)]
+                    if id_candidates:
+                        inv_id_map = pd.Series(inv_df[id_candidates[0]].astype(str).values, index=inv_df['股票名稱'].astype(str)).to_dict()
+
                 for name, group in inv_df.groupby('股票名稱'):
                     name = str(name).strip()
                     total_shares = group['股數'].sum()
@@ -430,13 +434,14 @@ class StrategyOrchestrator:
                     highest_record = group['波段最高價'].dropna().head(1).values
                     highest_price = float(highest_record[0]) if len(highest_record) > 0 and not pd.isna(highest_record[0]) else 0.0
                     
-                    hist_df = self.repo.get_history("", name)
+                    # 【核心修正】：優先使用唯一的證券代號進行縱向檢索，徹底擊碎名稱字串錯位
+                    s_id_target = str(inv_id_map.get(name, "")).split('.')[0].strip()
+                    hist_df = self.repo.get_history(s_id_target, name)
                     if hist_df.empty: continue
                     
                     latest = hist_df.iloc[-1]
                     current_price = latest['Close']
-                    raw_id = latest['id'] if 'id' in latest and latest['id'] else ""
-                    s_id = str(raw_id).split('.')[0]
+                    s_id = latest['id'] if 'id' in latest and latest['id'] else s_id_target
                     
                     if highest_price == 0.0 or pd.isna(highest_price): highest_price = hist_df['Close'].max()
 
@@ -462,7 +467,6 @@ class StrategyOrchestrator:
                         latest_idx = df_idx.iloc[-1]
                         k_val, d_val, osc_val = latest_idx['K'], latest_idx['D'], osc_s.iloc[-1]
 
-                    # 🟢 修正點：若監控名單與庫存股重複，直接更新狀態為庫存狀態，避免表格重複渲染或資料混亂
                     stock_res = {
                         'name': name, 'id': s_id, 'type': '庫存股', 'close': current_price,
                         'k': k_val, 'd': d_val, 'osc': osc_val,
@@ -471,7 +475,6 @@ class StrategyOrchestrator:
                     }
                     
                     if name in global_stock_pool:
-                        # 如果已存在，更新其內容回歸庫存股最高優先權
                         idx_to_update = next(i for i, x in enumerate(all_stocks_output) if x['name'] == name)
                         all_stocks_output[idx_to_update] = stock_res
                     else:

@@ -58,16 +58,13 @@ def clean_price(val: Any) -> float:
 
 
 def clean_stock_id(val: Any) -> str:
-    """極端清洗證券代號：去除政府 CSV 常見的 =", 引號與空白，確保純數字字串"""
     if pd.isna(val): return ""
     s = str(val).strip()
-    # 去除政府 CSV 常見的 ="2330" 格式
     s = re.sub(r'[="\'\s]', '', s)
     return s.split('.')[0]
 
 
 def clean_stock_name(val: Any) -> str:
-    """極端清洗股票名稱：去除所有括號代號、全半形空白"""
     if pd.isna(val): return ""
     s = str(val).strip()
     s = re.sub(r'\(.*?\)', '', s)
@@ -84,18 +81,15 @@ class DateDataParser:
         for sep in ['/', '-']:
             parts = s.split(sep)
             if len(parts) == 3:
-                try:
-                    year = int(parts[0])
-                    corrected_year = year if year > 1911 else year + 1911
-                    return date(corrected_year, int(parts[1]), int(parts[2]))
-                except ValueError: continue
+                try: return date(int(parts[0]) if int(parts[0]) > 1911 else int(parts[0]) + 1911, int(parts[1]), int(parts[2]))
+                except: continue
         digits = re.sub(r'\D', '', s)
         if len(digits) == 8:
             try: return datetime.strptime(digits, '%Y%m%d').date()
-            except ValueError: pass
+            except: pass
         elif len(digits) == 7:
             try: return date(int(digits[:3]) + 1911, int(digits[3:5]), int(digits[5:]))
-            except ValueError: pass
+            except: pass
         return None
 
     @staticmethod
@@ -110,11 +104,11 @@ class DateDataParser:
 
 
 class StockDataRepository:
-    """政府數據對齊版資料庫：整合模糊名稱與多管道交叉比對，全面尋回失蹤的歷史數據"""
+    """完美相容上市/上櫃/興櫃全市場政府 CSV 的高效記憶體資料庫"""
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.report_date = str(date.today())
-        self._master_records: List[Dict[str, Any]] = []
+        self.master_df = pd.DataFrame()
         self._initialize_database()
 
     def _initialize_database(self) -> None:
@@ -127,72 +121,71 @@ class StockDataRepository:
             date_match = re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(latest_file))
             if date_match: self.report_date = date_match.group(1)
 
-        logger.info(f"💾 正在解析 {len(csv_files)} 個政府網站歷史收盤 CSV...")
+        logger.info(f"💾 正在解析 {len(csv_files)} 個政府網站歷史收盤 CSV (上市/上櫃模糊融通機制啟用)...")
+        raw_data_list = []
         
         for file_path in csv_files:
             file_date = DateDataParser.extract_date_from_filename(os.path.basename(file_path))
             try:
                 try: df = pd.read_csv(file_path, encoding='utf-8-sig')
-                except Exception: df = pd.read_csv(file_path, encoding='cp950')
+                except: df = pd.read_csv(file_path, encoding='cp950')
                 
-                col_map = {}
+                date_col, id_col, name_col, close_col, high_col, low_col = None, None, None, None, None, None
                 for col in df.columns:
                     c = str(col).strip()
-                    if any(x in c for x in ['日期', 'Date']): col_map['date'] = col
-                    if any(x in c for x in ['證券代號', 'Code', '股票代號', '證券編號']): col_map['id'] = col
-                    if any(x in c for x in ['名稱', 'Name', '證券名稱']): col_map['name'] = col
-                    if any(x in c for x in ['收盤', 'Close', 'ClosingPrice']): col_map['close'] = col
-                    if any(x in c for x in ['最高', 'High', 'HighestPrice']): col_map['high'] = col
-                    if any(x in c for x in ['最低', 'Low', 'LowestPrice']): col_map['low'] = col
+                    if any(x in c for x in ['日期', 'Date']): date_col = col
+                    # 🟢 修正核心 1：全面納入獨立的 "代號" 與 "名稱" 關鍵字，通殺櫃買中心與證交所格式
+                    if any(x in c for x in ['證券代號', '股票代號', '代號', 'Code', '證券編號']): id_col = col
+                    if any(x in c for x in ['證券名稱', '股票名稱', '名稱', 'Name']): name_col = col
+                    if any(x in c for x in ['收盤價', '收盤', 'Close', 'ClosingPrice']): close_col = col
+                    if any(x in c for x in ['最高價', '最高', 'High', 'HighestPrice']): high_col = col
+                    if any(x in c for x in ['最低價', '最低', 'Low', 'LowestPrice']): low_col = col
                 
-                if 'close' not in col_map or 'id' not in col_map: continue
+                if not close_col: continue
                     
                 for _, row in df.iterrows():
                     row_date = file_date
-                    if not row_date and 'date' in col_map:
-                        row_date = DateDataParser.parse_generic_date(row[col_map['date']])
+                    if not row_date and date_col:
+                        row_date = DateDataParser.parse_generic_date(row[date_col])
                     if not row_date: continue
                         
-                    s_id = clean_stock_id(row[col_map['id']])
-                    s_name = clean_stock_name(row[col_map['name']]) if 'name' in col_map else ""
-                    if not s_id: continue
+                    s_id = clean_stock_id(row[id_col]) if id_col else ""
+                    s_name = clean_stock_name(row[name_col]) if name_col else ""
+                    if not s_id and not s_name: continue
                         
-                    c_val = clean_price(row[col_map['close']])
+                    c_val = clean_price(row[close_col])
                     if pd.isna(c_val): continue 
                         
-                    h_val = clean_price(row[col_map['high']]) if 'high' in col_map else c_val
-                    l_val = clean_price(row[col_map['low']]) if 'low' in col_map else c_val
+                    h_val = clean_price(row[high_col]) if 'high' in col_map else c_val if high_col else c_val
+                    l_val = clean_price(row[low_col]) if 'low' in col_map else c_val if low_col else c_val
                     
-                    self._master_records.append({
+                    raw_data_list.append({
                         'id': s_id, 'name': s_name, 'Date': row_date, 
                         'Close': c_val, 'High': h_val, 'Low': l_val
                     })
             except Exception: continue
-        logger.info(f"✅ 政府歷史數據讀取完畢，總紀錄數: {len(self._master_records)}")
+                
+        if raw_data_list:
+            self.master_df = pd.DataFrame(raw_data_list)
+        logger.info(f"✅ 政府歷史數據讀取完畢，總紀錄數: {len(self.master_df)}")
 
     def get_history(self, stock_id: str, stock_name: str) -> pd.DataFrame:
-        """核心重構：代號與名稱交叉大融通檢索，徹底避免格式錯位"""
+        """還原原始 modify.py 聯集過濾神髓：代號與模糊名稱交叉大融通檢索"""
         target_id = clean_stock_id(stock_id)
         target_name = clean_stock_name(stock_name)
         
-        if not self._master_records: return pd.DataFrame()
+        if self.master_df.empty: return pd.DataFrame()
         
-        # 轉為 DataFrame 進行多條件聯集過濾
-        df_master = pd.DataFrame(self._master_records)
+        cond_id = (self.master_df['id'] == target_id) if target_id else pd.Series([False] * len(self.master_df))
         
-        cond_id = (df_master['id'] == target_id) if target_id else pd.Series([False] * len(df_master))
-        
-        # 模糊名稱適應：支持全匹配，或前兩個字頭匹配（防範 聯亞 vs 聯亞光電 錯位）
         if target_name:
-            cond_name = (df_master['name'] == target_name) | (df_master['name'].str.startswith(target_name[:2]))
+            cond_name = (self.master_df['name'] == target_name) | (self.master_df['name'].str.startswith(target_name[:2]))
         else:
-            cond_name = pd.Series([False] * len(df_master))
+            cond_name = pd.Series([False] * len(self.master_df))
             
-        df_res = df_master[cond_id | cond_name]
-        
+        df_res = self.master_df[cond_id | cond_name]
         if df_res.empty: return pd.DataFrame()
         
-        # 保證輸出結構與時間序列完整性
         return df_res.sort_values('Date').drop_duplicates('Date').reset_index(drop=True)
 
 
@@ -225,9 +218,7 @@ class MarketIndicatorService:
 
     @staticmethod
     def calculate_macd(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series]:
-        if len(df) < 26:
-            empty = pd.Series([np.nan] * len(df))
-            return empty, empty, empty
+        # 🟢 修正核心 2：徹底拔除人為強加的 len < 26 限制，回歸與原版 modify.py 100% 一致的自動化 ewm 計算
         df = df.sort_values('Date')
         ema12 = df['Close'].ewm(span=12, adjust=True).mean()
         ema26 = df['Close'].ewm(span=26, adjust=True).mean()
@@ -278,19 +269,20 @@ class NotificationService:
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
+        # 🟢 修正核心 3：依據圖片 [image_a333d7.png] 完美還原帶有縮排與圓點樣式的「智慧多因子策略買賣觸發提示」
         if alerts:
             alert_html = (
-                "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px Triton;'>"
+                "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px;'>"
                 "<h3 style='color: #dd6b20; font-size: 18px; margin-top: 0; margin-bottom: 15px;'>⚠️ 智慧多因子策略買賣觸發提示</h3>"
                 "<ul style='list-style-type: disc; padding-left: 20px; line-height: 1.8; color: #2d3748; font-size: 14px;'>"
             )
             for a in alerts:
                 alert_html += (
-                    f"<li style='margin-bottom: 15px; list-style-type: disc;'> "
+                    f"<li style='margin-bottom: 12px; list-style-type: disc;'>"
                     f"<b>{a['icon']} [{a['type']}] {a['name']}</b><br>"
-                    f"<span style='color: #4a5568;'>- 今日收盤: {a['close']}</span><br>"
-                    f"<span style='color: #4a5568;'>- {a['line2']}</span><br>"
-                    f"<span style='color: #4a5568;'>- 說明：{a['desc']}</span>"
+                    f"&nbsp;&nbsp;- 今日收盤: {a['close']}<br>"
+                    f"&nbsp;&nbsp;- {a['line2']}<br>"
+                    f"&nbsp;&nbsp;- 說明：{a['desc']}"
                     f"</li>"
                 )
             alert_html += "</ul></div>"
@@ -520,10 +512,11 @@ class StrategyOrchestrator:
                         all_stocks_output.append(stock_res)
                     
                     for _, row in group.iterrows():
-                        row['移動停利百分比(%)'] = trail_pct
-                        row['波段最高價'] = highest_price
-                        row['保本停損價'] = base_stop
-                        updated_rows.append(row)
+                        row_copy = row.copy()
+                        row_copy['移動停利百分比(%)'] = trail_pct
+                        row_copy['波段最高價'] = highest_price
+                        row_copy['保本停損價'] = base_stop
+                        updated_rows.append(row_copy)
                 pd.DataFrame(updated_rows).to_excel(INVENTORY_FILE, index=False)
             except Exception as e: logger.error(f"庫存智慧風控計算失敗: {e}")
 

@@ -58,10 +58,15 @@ def clean_price(val: Any) -> float:
 
 
 def clean_stock_id(val: Any) -> str:
+    """進階清洗代號：補足 ETF 與特定個股遺失的前導零 (如 56 -> 0056)"""
     if pd.isna(val): return ""
     s = str(val).strip()
     s = re.sub(r'[="\'\s]', '', s)
-    return s.split('.')[0]
+    s = s.split('.')[0]
+    # 如果是 4 位以下的純數字（如 56, 919），自動補足前導零至 4 位或 5 位（如 0056）
+    if s.isdigit() and len(s) < 4:
+        return s.zfill(4)
+    return s
 
 
 def clean_stock_name(val: Any) -> str:
@@ -104,7 +109,7 @@ class DateDataParser:
 
 
 class StockDataRepository:
-    """完美相容上市/上櫃/興櫃全市場政府 CSV 的高效記憶體資料庫"""
+    """終極安全版資料庫：防止跨檔案變數污染，支援櫃買中心特殊日期欄位"""
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.report_date = str(date.today())
@@ -121,7 +126,7 @@ class StockDataRepository:
             date_match = re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(latest_file))
             if date_match: self.report_date = date_match.group(1)
 
-        logger.info(f"💾 正在解析 {len(csv_files)} 個政府網站歷史收盤 CSV (上市/上櫃模糊融通機制啟用)...")
+        logger.info(f"💾 正在解析 {len(csv_files)} 個政府網站歷史收盤 CSV (防變數污染與櫃買欄位擴充解鎖)...")
         raw_data_list = []
         
         for file_path in csv_files:
@@ -130,11 +135,13 @@ class StockDataRepository:
                 try: df = pd.read_csv(file_path, encoding='utf-8-sig')
                 except: df = pd.read_csv(file_path, encoding='cp950')
                 
+                # 🟢 修正核心 1：每次迭代檔案時，必須將欄位定位指標初始化清空，防止變數跨檔案交叉污染！
                 date_col, id_col, name_col, close_col, high_col, low_col = None, None, None, None, None, None
+                
                 for col in df.columns:
                     c = str(col).strip()
-                    if any(x in c for x in ['日期', 'Date']): date_col = col
-                    # 🟢 修正核心 1：全面納入獨立的 "代號" 與 "名稱" 關鍵字，通殺櫃買中心與證交所格式
+                    # 🟢 修正核心 2：擴充時間欄位匹配條件，納入櫃買中心的 "年月日" 與 "成交日期"
+                    if any(x in c for x in ['日期', 'Date', '年月日', '成交日期']): date_col = col
                     if any(x in c for x in ['證券代號', '股票代號', '代號', 'Code', '證券編號']): id_col = col
                     if any(x in c for x in ['證券名稱', '股票名稱', '名稱', 'Name']): name_col = col
                     if any(x in c for x in ['收盤價', '收盤', 'Close', 'ClosingPrice']): close_col = col
@@ -156,8 +163,8 @@ class StockDataRepository:
                     c_val = clean_price(row[close_col])
                     if pd.isna(c_val): continue 
                         
-                    h_val = clean_price(row[high_col]) if 'high' in col_map else c_val if high_col else c_val
-                    l_val = clean_price(row[low_col]) if 'low' in col_map else c_val if low_col else c_val
+                    h_val = clean_price(row[high_col]) if high_col else c_val
+                    l_val = clean_price(row[low_col]) if low_col else c_val
                     
                     raw_data_list.append({
                         'id': s_id, 'name': s_name, 'Date': row_date, 
@@ -170,7 +177,6 @@ class StockDataRepository:
         logger.info(f"✅ 政府歷史數據讀取完畢，總紀錄數: {len(self.master_df)}")
 
     def get_history(self, stock_id: str, stock_name: str) -> pd.DataFrame:
-        """還原原始 modify.py 聯集過濾神髓：代號與模糊名稱交叉大融通檢索"""
         target_id = clean_stock_id(stock_id)
         target_name = clean_stock_name(stock_name)
         
@@ -218,7 +224,6 @@ class MarketIndicatorService:
 
     @staticmethod
     def calculate_macd(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series]:
-        # 🟢 修正核心 2：徹底拔除人為強加的 len < 26 限制，回歸與原版 modify.py 100% 一致的自動化 ewm 計算
         df = df.sort_values('Date')
         ema12 = df['Close'].ewm(span=12, adjust=True).mean()
         ema26 = df['Close'].ewm(span=26, adjust=True).mean()
@@ -269,7 +274,6 @@ class NotificationService:
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
-        # 🟢 修正核心 3：依據圖片 [image_a333d7.png] 完美還原帶有縮排與圓點樣式的「智慧多因子策略買賣觸發提示」
         if alerts:
             alert_html = (
                 "<div style='border-left: 4px solid #f6ad55; padding-left: 15px; margin-bottom: 25px;'>"

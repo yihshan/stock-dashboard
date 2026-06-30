@@ -405,10 +405,10 @@ class StrategyOrchestrator:
                     status_str = "✅ 持股安全"
                     if current_price <= avg_cost:
                         if is_bull_market:
-                            structured_alerts.append({'icon': '🔄', 'type': '智慧緩衝：暫緩停損', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"成本: {avg_cost:.2f}", 'desc': "大盤加權指數處於強勢多頭格局，此回檔建議暫緩盲目砍單。"})
+                            structured_alerts.append({'icon': '🔄', 'type': '智慧緩衝：暫緩停損', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': "狀態: 處於成本區間", 'desc': "大盤加權指數處於強勢多頭格局，此回檔建議暫緩盲目砍單。"})
                             status_str = "🔄 智慧緩衝"
                         else:
-                            structured_alerts.append({'icon': '🛑', 'type': '鐵律清倉停損', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"成本: {avg_cost:.2f}", 'desc': "大盤走空，請嚴守資金紀律全數清倉避險！"})
+                            structured_alerts.append({'icon': '🛑', 'type': '鐵律清倉停損', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': "狀態: 跌破防守線", 'desc': "大盤走空，請嚴守資金紀律全數清倉避險！"})
                             status_str = "🛑 鐵律停損"
                             triggered_exit_stocks.add(c_name)
                     elif current_price <= highest_p * 0.85:
@@ -422,7 +422,7 @@ class StrategyOrchestrator:
                     res = {
                         'name': c_name, 'id': latest['id'], 'type': '現有庫存股', 'close': current_price, 
                         'k': df_idx.iloc[-1]['K'], 'd': df_idx.iloc[-1]['D'], 'osc': osc_s.iloc[-1], 
-                        'target_or_cost': f"成本: {avg_cost:.2f}", 'status': status_str
+                        'target_or_cost': "庫存持有中", 'status': status_str
                     }
                     all_stocks_output.append(res)
                     global_stock_pool[c_name] = res

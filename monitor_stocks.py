@@ -12,6 +12,9 @@ from typing import List, Dict, Any, Tuple, Optional
 
 import numpy as np
 import pandas as pd
+import shutil
+from pathlib import Path
+from datetime import date
 
 # 配置專業日誌系統
 logging.basicConfig(
@@ -44,6 +47,33 @@ except ModuleNotFoundError:
 BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
+
+# ==========================================
+# 🔄 OneDrive 自動同步與備份大腦
+# ==========================================
+def sync_to_onedrive(source_dir: Path):
+    # 1. 定義您的目標 OneDrive 每日收盤路徑
+    onedrive_target_dir = Path(r"C:\Users\yihsh\OneDrive - FBTW\每日收盤")
+    
+    try:
+        # 確保 OneDrive 資料夾存在，若不存在會自動建立
+        onedrive_target_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 2. 自動去您的資料夾撈今天剛下載的每日收盤 CSV 檔
+        today_str = str(date.today())
+        today_files = list(source_dir.glob(f"台股每日收盤價_{today_str}.csv"))
+        
+        if today_files:
+            latest_file = today_files[0]
+            target_path = onedrive_target_dir / latest_file.name
+            
+            # 3. 執行複製 (shutil.copy2 會連同檔案的修改時間一併完美保留)
+            shutil.copy2(latest_file, target_path)
+            logger.info(f"🚀 [OneDrive 備份成功] 已自動複製至: {target_path}")
+        else:
+            logger.warning(f"⚠️ [OneDrive 備份跳過] 在資料夾中找不到今日 ({today_str}) 的收盤價 CSV 檔案。")
+    except Exception as e:
+        logger.error(f"❌ [OneDrive 備份失敗] 寫入過程中發生異常: {e}")
 
 # 🟢 全域核心大腦：2026-2027 預估股利與要求殖利率自適應矩陣
 DIVIDEND_PRESETS = {

@@ -460,7 +460,7 @@ class StrategyOrchestrator:
                             structured_alerts.append({'icon': '🔄', 'type': '庫存逢低加碼提示', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"加碼目標: {target_price:.2f}", 'desc': "波段趨勢安全，已達估值加倉區間，建議分批加碼。"})
                             status_str = "🔄 建議加碼"
                         else:
-                            structured_alerts.append({'icon': '🎯', 'type': '監控買進提示', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"買進目標: {target_price:.2f}", 'desc': "已達大波段安全安全邊際，建議分批佈局。"})
+                            structured_alerts.append({'icon': '🎯', 'type': '監控買進提示', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"買進目標: {target_price:.2f}", 'desc': "已達大波段安全邊際，建議分批佈局。"})
                             status_str = "🎯 已達買點"
 
                     df_idx = MarketIndicatorService.calculate_kd9(df)

@@ -270,30 +270,47 @@ class NotificationService:
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
-        # 🟢 修正核心 4：徹底解鎖！將「行動邏輯路徑」從寫死字串改為動態橫向核對大腦
+        # 🟢 修正後的「市價 vs 買點」雙重動態判定決策面板
         preset_matrix_rows = ""
+        
+        # 先建立一個市價查找字典，方便迴圈內即時比對
+        price_map = {str(s['id']): s['close'] for s in all_stocks}
+        name_price_map = {s['name']: s['close'] for s in all_stocks}
+
         for s_id, cfg in DIVIDEND_PRESETS.items():
             avg_div = (cfg['div_2026'] + cfg['div_2027']) / 2
             calc_target = avg_div / (cfg['target_yield'] / 100)
             
-            # 即時動態穿透審查該資產是否在現有持股庫存中
+            # 即時抓取當前最新的市場收盤價
+            current_price = price_map.get(str(s_id)) or name_price_map.get(cfg['name'])
             is_owned = (cfg['name'] in global_stock_pool)
-            if is_owned:
-                path_desc = "<span style='color:#3182ce; font-weight:bold;'>路徑 2：現價 ≦ 股利估值買點 (有持股)</span><br><small style='color:#718096;'>判定為核心資產 ➜ 啟動大波段逢低加碼路徑</small>"
-                defense_desc = "🛡️ 多頭環境下享智慧緩衝防護網"
+            
+            # 💡 核心修正：同時核對「持股狀態」與「價格黃金交叉條件」
+            if current_price and current_price <= calc_target:
+                # 確實跌破買點，啟動交易路徑
+                if is_owned:
+                    path_desc = "<span style='color:#e53e3e; font-weight:bold;'>🎯 路徑 2：現價 ≦ 買點 (有持股)</span><br><small style='color:#e53e3e;'>已達估值甜蜜區 ➜ <b>執行大波段逢低加碼</b></small>"
+                else:
+                    path_desc = "<span style='color:#dd6b20; font-weight:bold;'>🎯 路徑 1：現價 ≦ 買點 (無持股)</span><br><small style='color:#dd6b20;'>已達安全邊際 ➜ <b>執行分批建立新倉</b></small>"
+                defense_desc = "🛡️ 策略已觸發，請依資金紀律分批建倉"
             else:
-                path_desc = "<span style='color:#dd6b20;'>路徑 1：現價 ≦ 股利估值買點 (無持股)</span><br><small style='color:#718096;'>判定為新觀察標的 ➜ 啟動安全邊際分批佈局</small>"
-                defense_desc = "🛡️ 空頭市場全面啟動鐵律停損風控"
+                # 股價高於買點，處於溢價觀望狀態
+                if is_owned:
+                    path_desc = "<span style='color:#3182ce;'>⏳ 現價 ＞ 買點 (有持股)</span><br><small style='color:#718096;'>資產價值高昂 ➜ <b>現有部位續抱、暫緩加碼</b></small>"
+                    defense_desc = "🛡️ 多頭環境下享智慧緩衝持股防護網"
+                else:
+                    path_desc = "<span style='color:#4a5568;'>⏳ 現價 ＞ 買點 (無持股)</span><br><small style='color:#718096;'>未達安全邊際 ➜ <b>建倉條件不滿足，持續監控</b></small>"
+                    defense_desc = "🛡️ 耐心等待估值回落，切勿盲目追高"
 
             preset_matrix_rows += (
                 f"<tr style='border-bottom: 1px solid #e2e8f0;'>"
                 f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:center; background-color:#f7fafc;'><b>{cfg['name']}</b><br><small style='color:#718096;'>{s_id}</small></td>"
                 f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2026']:.1f}元</td>"
                 f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:right;'>{cfg['div_2027']:.1f}元</td>"
-                f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:center; font-weight:bold; color:#e53e3e;'>{cfg['target_yield']:.2f}%</td>"
+                f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:center; font-weight:bold; color:#718096;'>{cfg['target_yield']:.2f}%</td>"
                 f"<td style='padding:10px; border:1px solid #e2e8f0; text-align:right; font-weight:bold; color:#b7791f; background-color:#fffaf0;'>{calc_target:.1f}</td>"
                 f"<td style='padding:10px; border:1px solid #e2e8f0; font-size:12px;'>{path_desc}</td>"  
-                f"<td style='padding:10px; border:1px solid #e2e8f0; font-size:12px; color:#e53e3e;'>{defense_desc}</td>"
+                f"<td style='padding:10px; border:1px solid #e2e8f0; font-size:12px;'>{defense_desc}</td>"
                 f"</tr>"
             )
         

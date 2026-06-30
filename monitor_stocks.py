@@ -316,7 +316,12 @@ class NotificationService:
             type_bg = "#e2e8f0" if s['type'] == '監控觀察股' else "#feebc8"
             status_style = "color:red; font-weight:bold;" if "🎯" in s['status'] or "⚠️" in s['status'] else "color:#38a169;"
             
-            k_str = f"{s['k']:.2f}" if not pd.isna(s['k']) else "50.00"
+            # 🟢 修正核心：完整補回 K 值低於 15 的紅字加粗標註樣式
+            k_threshold = getattr(config, 'K_THRESHOLD', 15)
+            is_nan_k = pd.isna(s['k'])
+            k_style = "color:red; font-weight:bold;" if not is_nan_k and s['k'] < k_threshold else ""
+            
+            k_str = f"{s['k']:.2f}" if not is_nan_k else "50.00"
             d_str = f"{s['d']:.2f}" if not pd.isna(s['d']) else "50.00"
             osc_str = f"{s['osc']:.2f}" if not pd.isna(s['osc']) else "0.00"
             
@@ -325,14 +330,13 @@ class NotificationService:
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><b>{s['name']}</b><br><small>{s['id']}</small></td>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'><span style='background-color:{type_bg}; padding:3px 8px; border-radius:4px;'>{s['type']}</span></td>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'><b>{s['close']:.2f}</b></td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{k_str}</td>"
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:right; {k_style}'>{k_str}</td>"  # 🟢 注入紅字樣式
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{d_str}</td>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{osc_str}</td>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'>{s['target_or_cost']}</td>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:center; {status_style}'>{s['status']}</td>"
                 f"</tr>"
-            )
-            
+            )            
         html = f"<html><body style=\"font-family: 'Microsoft JhengHei'; padding: 20px;\"><h2>📊 台股智慧決策診斷總覽</h2>{dividend_table_html}<p><b>數據基準日：</b>{report_date}</p><p>🌐 {market_text}</p>{alert_html}<hr><table style=\"width:100%; border-collapse:collapse;\"><thead><tr style=\"background-color: #004a99; color: white;\"><th>股票名稱</th><th>資產類別</th><th>收盤價</th><th>日K</th><th>日D</th><th>MACD (OSC)</th><th>目標 / 成本</th><th>策略診斷狀態</th></tr></thead><tbody>{table_rows}</tbody></table></body></html>"
         msg.attach(MIMEText(html, 'html'))
         try:

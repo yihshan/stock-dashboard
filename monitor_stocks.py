@@ -319,7 +319,7 @@ class NotificationService:
             f"<h3 style='color: #2b6cb0; margin-top: 0; margin-bottom: 14px;'>📋 2026-2027 智慧股利估值與策略決策動態路徑綜合面板</h3>"
             f"<table style='width:100%; border-collapse:collapse; font-size:13px; border: 1px solid #e2e8f0;'>"
             f"<thead><tr style='background-color: #2b6cb0; color: white;'>"
-            f"<th style='padding:10px;'>股票名稱</th><th style='padding:10px;'>2026配息</th><th style='padding:10px;'>2027配息</th><th style='padding:10px;'>要求殖利率</th><th style='padding:10px;'>推算目標價</th><th style='padding:10px;'>採取行動邏輯路徑 (動態)</th><th style='padding:10px;'>大盤聯動機制</th>"
+            f"<th style='padding:10px;'>股票名稱</th><th style='padding:10px;'>2026配息(動態估值)</th><th style='padding:10px;'>2027配息(動態估值)</th><th style='padding:10px;'>要求殖利率</th><th style='padding:10px;'>推算目標價</th><th style='padding:10px;'>採取行動邏輯路徑 (動態)</th><th style='padding:10px;'>大盤聯動機制</th>"
             f"</tr></thead><tbody>{preset_matrix_rows}</tbody></table></div>"
         )
 

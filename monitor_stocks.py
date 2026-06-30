@@ -491,5 +491,8 @@ class StrategyOrchestrator:
             self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output, global_stock_pool)
 
 if __name__ == "__main__":
+    # 🟢 讓 Python 在跑策略之前，先幫您把檔案安全搬移到 OneDrive
+    sync_to_onedrive(BASE_DIR)
+    
     orchestrator = StrategyOrchestrator()
     orchestrator.execute_pipeline()

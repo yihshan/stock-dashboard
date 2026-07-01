@@ -542,5 +542,5 @@ def execute_pipeline(self) -> None:
         if all_stocks_output:
             self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output, global_stock_pool, triggered_exit_stocks)
         if __name__ == "__main__":
-    orchestrator = StrategyOrchestrator()
-    orchestrator.execute_pipeline()
+            orchestrator = StrategyOrchestrator()
+            orchestrator.execute_pipeline()

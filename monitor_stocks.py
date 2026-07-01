@@ -292,7 +292,7 @@ class NotificationService:
         send_line_message(getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', ''), getattr(config, 'LINE_USER_ID', ''), f"\n📊 【台股雙多智慧策略決策報告】\n基準日: {report_date}\n" + "\n------------\n".join(lines))
 
     # 🟢 修正：加入 triggered_exits 參數
-        def send_html_email(self, report_date: str, market_text: str, alerts: List[Dict[str, str]], all_stocks: List[Dict[str, Any]], global_stock_pool: Dict[str, Any], triggered_exits: set) -> None:
+    def send_html_email(self, report_date: str, market_text: str, alerts: List[Dict[str, str]], all_stocks: List[Dict[str, Any]], global_stock_pool: Dict[str, Any], triggered_exits: set) -> None:
         msg = MIMEMultipart()
         msg = MIMEMultipart()
         msg['Subject'] = f"📊 台股雙多智慧策略決策報告與診斷總覽 - {report_date}"

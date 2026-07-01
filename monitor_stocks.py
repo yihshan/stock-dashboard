@@ -97,7 +97,27 @@ def clean_stock_name(val: Any) -> str:
     s = re.sub(r'\(.*?\)', '', s)
     s = re.sub(r'\[.*?\]', '', s)
     return s.replace(' ', '').replace(' ', '')
-
+    
+def round_to_tw_tick(price: float) -> float:
+    """
+    🟢 全新台股自適應 Tick 規格化大腦：
+    將計算出的理論目標價，精準向下修正（Floor）至台灣證券交易所合法的掛單檔位
+    """
+    if pd.isna(price) or price <= 0: return 0.0
+    
+    if price < 10:
+        return np.floor(price * 100) / 100
+    elif price < 50:
+        return np.floor(price * 20) / 20
+    elif price < 100:
+        return np.floor(price * 10) / 10
+    elif price < 500:
+        return np.floor(price * 2) / 2
+    elif price < 1000:
+        return np.floor(price)
+    else:
+        # 👑 千元以上個股：每跳 5 元，無小數點
+        return np.floor(price / 5) * 5
 
 class DateDataParser:
     @staticmethod
@@ -306,7 +326,10 @@ class NotificationService:
 
         for s_id, cfg in DIVIDEND_PRESETS.items():
             avg_div = (cfg['div_2026'] + cfg['div_2027']) / 2
-            calc_target = avg_div / (cfg['target_yield'] / 100)
+            raw_target = avg_div / (cfg['target_yield'] / 100)
+            
+            # 💡 核心修正：將理論價格精準轉換為台股合法交易檔位
+            calc_target = round_to_tw_tick(raw_target)
             
             current_price = price_map.get(str(s_id)) or name_price_map.get(cfg['name'])
             is_owned = (cfg['name'] in global_stock_pool)
@@ -397,12 +420,12 @@ class StrategyOrchestrator:
         self.repo = StockDataRepository(BASE_DIR)
         self.notifier = NotificationService()
 
-    def execute_pipeline(self) -> None:
+def execute_pipeline(self) -> None:
         is_bull_market, market_text = MarketIndicatorService.check_macro_regime()
         structured_alerts, all_stocks_output, global_stock_pool = [], [], {}
         triggered_exit_stocks = set()
         
-        # 1. 第一階段：精準滾動處理現有庫存股
+        # 1. 第一階段：處理現有庫存股
         if INVENTORY_FILE.exists():
             try:
                 inv_df = pd.read_excel(INVENTORY_FILE)
@@ -432,8 +455,7 @@ class StrategyOrchestrator:
                     status_str = "✅ 持股安全"
                     if current_price <= avg_cost:
                         if is_bull_market:
-                            # 🟢 修正：狀態維持智慧緩衝，但【不】推入 structured_alerts（即買賣觸發提示中不顯示）
-                            status_str = "🔄 智慧緩衝"
+                            status_str = "🔄 智慧緩衝"  # 隱訊號，不推入上方警示
                         else:
                             structured_alerts.append({
                                 'icon': '🛑', 'type': '鐵律清倉停損', 'name': c_name, 'close': f"{current_price:.2f}", 
@@ -455,8 +477,7 @@ class StrategyOrchestrator:
                     res = {
                         'name': c_name, 'id': latest['id'], 'type': '現有庫存股', 'close': current_price, 
                         'k': df_idx.iloc[-1]['K'], 'd': df_idx.iloc[-1]['D'], 'osc': osc_s.iloc[-1], 
-                        'target_or_cost': "庫存持有中", # 🟢 修正：移除成本數值顯示
-                        'status': status_str
+                        'target_or_cost': "庫存持有中", 'status': status_str
                     }
                     all_stocks_output.append(res)
                     global_stock_pool[c_name] = res
@@ -478,20 +499,23 @@ class StrategyOrchestrator:
                     current_price = latest['Close']
                     s_id_str = str(latest['id'])
                     
+                    # 💡 整合點：根據有無 Presets 理論計算，再經由 round_to_tw_tick 修正為實戰掛單價
                     if s_id_str in DIVIDEND_PRESETS:
                         cfg = DIVIDEND_PRESETS[s_id_str]
-                        target_price = ((cfg['div_2026'] + cfg['div_2027']) / 2) / (cfg['target_yield'] / 100)
+                        raw_target = ((cfg['div_2026'] + cfg['div_2027']) / 2) / (cfg['target_yield'] / 100)
+                        target_price = round_to_tw_tick(raw_target)  # 👈 轉為合法 Tick 價
                         diff_pct = ((current_price - target_price) / target_price) * 100
                         status_str = f"溢價 {diff_pct:.1f}%"
                     else:
-                        target_price = current_price * 0.85
+                        raw_target = current_price * 0.85
+                        target_price = round_to_tw_tick(raw_target)  # 👈 轉為合法 Tick 價
                         status_str = "溢價 17.6%"
                     
                     is_already_owned = (c_name in global_stock_pool)
                     
+                    # 檢查是否觸發買進/加碼（這裡比對的 target_price 已是合法的真實 Tick 價格）
                     is_triggered = False
-                    # 💡 要求現價必須低於目標價的 98% (也就是至少要便宜 2% 以上才開槍)
-                    if current_price <= (target_price * 0.98) and c_name not in triggered_exit_stocks:
+                    if current_price <= target_price and c_name not in triggered_exit_stocks:
                         is_triggered = True
                         if is_already_owned:
                             structured_alerts.append({'icon': '🔄', 'type': '庫存逢低加碼提示', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"加碼目標: {target_price:.2f}", 'desc': "波段趨勢安全，已達估值加倉區間，建議分批加碼。"})
@@ -500,7 +524,7 @@ class StrategyOrchestrator:
                             structured_alerts.append({'icon': '🎯', 'type': '監控買進提示', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"買進目標: {target_price:.2f}", 'desc': "已達大波段安全安全邊際，建議分批佈局。"})
                             status_str = "🎯 已達買點"
 
-                    # 🟢 修正：監控觀察股中，若未觸發买点且含有「溢價」文字，直接跳過不列入
+                    # 👑 雜訊過濾閘門：未達標且帶有「溢價」文字的監控項目，直接踢除不顯示
                     if not is_triggered and "溢價" in status_str:
                         continue
 
@@ -514,9 +538,8 @@ class StrategyOrchestrator:
                     })
             except Exception as e: logger.error(f"監控觀察模組執行失敗: {e}")
 
+        # 3. 第三階段：寄出報表（並傳入風控名單，阻斷置頂面板盲目加碼）
         if all_stocks_output:
-            # 🟢 修正：將 triggered_exit_stocks 傳入，讓置頂面板與風控同步
-            self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output, global_stock_pool, triggered_exit_stocks)
-if __name__ == "__main__":
+            self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output, global_stock_pool, triggered_exit_stocks)if __name__ == "__main__":
     orchestrator = StrategyOrchestrator()
     orchestrator.execute_pipeline()

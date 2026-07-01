@@ -490,7 +490,8 @@ class StrategyOrchestrator:
                     is_already_owned = (c_name in global_stock_pool)
                     
                     is_triggered = False
-                    if current_price <= target_price and c_name not in triggered_exit_stocks:
+                    # 💡 要求現價必須低於目標價的 98% (也就是至少要便宜 2% 以上才開槍)
+                    if current_price <= (target_price * 0.98) and c_name not in triggered_exit_stocks:
                         is_triggered = True
                         if is_already_owned:
                             structured_alerts.append({'icon': '🔄', 'type': '庫存逢低加碼提示', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"加碼目標: {target_price:.2f}", 'desc': "波段趨勢安全，已達估值加倉區間，建議分批加碼。"})

@@ -4,7 +4,6 @@ import re
 import smtplib
 import logging
 import sys
-import shutil
 from datetime import datetime, date
 from pathlib import Path
 from email.mime.text import MIMEText
@@ -100,8 +99,7 @@ def clean_stock_name(val: Any) -> str:
     
 def round_to_tw_tick(price: float) -> float:
     """
-    🟢 全新台股自適應 Tick 規格化大腦：
-    將計算出的理論目標價，精準向下修正（Floor）至台灣證券交易所合法的掛單檔位
+    🟢 全新台股自適應 Tick 規格化大腦
     """
     if pd.isna(price) or price <= 0: return 0.0
     
@@ -116,7 +114,6 @@ def round_to_tw_tick(price: float) -> float:
     elif price < 1000:
         return np.floor(price)
     else:
-        # 👑 千元以上個股：每跳 5 元，無小數點
         return np.floor(price / 5) * 5
 
 class DateDataParser:
@@ -259,31 +256,23 @@ class MarketIndicatorService:
     @staticmethod
     def get_macro_multiplier() -> float:
         """
-        🟢 全新總經自適應大腦：
-        根據大盤相對於200MA的乖離率，動態產出殖利率的「修正係數」
+        🟢 全新總經自適應大腦
         """
         try:
             twii = yf.Ticker("^TWII")
             df = twii.history(period="1y")
             df['200MA'] = df['Close'].rolling(window=200).mean()
-            
             current_close = df['Close'].iloc[-1]
             ma200 = df['200MA'].iloc[-1]
-            
-            # 計算大盤相對於年線的乖離率 (Bias)
             bias = (current_close - ma200) / ma200
-            
-            # 總經修正邏輯：
-            # 如果 bias > 0.1 (大盤狂飆高於年線 10% 以上)，資金寬鬆，要求殖利率調降 10% (乘以 0.9) ➜ 目標價調高
-            # 如果 bias < -0.05 (大盤低於年線 5% 以上)，市場恐慌，要求殖利率提高 15% (乘以 1.15) ➜ 目標價嚴格壓低
             if bias > 0.10:
                 return 0.90  
             elif bias < -0.05:
                 return 1.15  
             else:
-                return 1.00  # 正常景氣環境，不修正
+                return 1.00  
         except:
-            return 1.00  # 連線異常時降級回歸標準矩陣
+            return 1.00  
 
     @staticmethod
     def check_macro_regime() -> Tuple[bool, str]:
@@ -311,15 +300,12 @@ class NotificationService:
         lines = [f"{a['icon']} [{a['type']}] {a['name']}\n- 今日收盤: {a['close']}\n- {a['line2']}\n- 說明: {a['desc']}" for a in alerts]
         send_line_message(getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', ''), getattr(config, 'LINE_USER_ID', ''), f"\n📊 【台股雙多智慧策略決策報告】\n基準日: {report_date}\n" + "\n------------\n".join(lines))
 
-    # 🟢 修正：加入 triggered_exits 參數
     def send_html_email(self, report_date: str, market_text: str, alerts: List[Dict[str, str]], all_stocks: List[Dict[str, Any]], global_stock_pool: Dict[str, Any], triggered_exits: set) -> None:
-        msg = MIMEMultipart()
         msg = MIMEMultipart()
         msg['Subject'] = f"📊 台股雙多智慧策略決策報告與診斷總覽 - {report_date}"
         msg['From'] = self.email_user
         msg['To'] = ", ".join(self.recipients)
 
-        # 🟢 真正交叉審計：「市價 vs 估值買點」雙重動態判定決策面板
         preset_matrix_rows = ""
         price_map = {str(s['id']): s['close'] for s in all_stocks}
         name_price_map = {s['name']: s['close'] for s in all_stocks}
@@ -327,14 +313,11 @@ class NotificationService:
         for s_id, cfg in DIVIDEND_PRESETS.items():
             avg_div = (cfg['div_2026'] + cfg['div_2027']) / 2
             raw_target = avg_div / (cfg['target_yield'] / 100)
-            
-            # 💡 核心修正：將理論價格精準轉換為台股合法交易檔位
             calc_target = round_to_tw_tick(raw_target)
             
             current_price = price_map.get(str(s_id)) or name_price_map.get(cfg['name'])
             is_owned = (cfg['name'] in global_stock_pool)
             
-            # 💡 核心修正：即便價格低於買點，但如果該個股已經觸發風控出場（停利/停損），強制切換描述！
             if cfg['name'] in triggered_exits:
                 path_desc = "<span style='color:#718096; font-weight:bold;'>🛑 風控鎖定：策略執行出場中</span><br><small style='color:#718096;'>已觸發移動停利/停損線 ➜ <b>請先執行落袋/避險，禁止加碼</b></small>"
                 defense_desc = "⚠️ 技術面破位，進入風控保護程序"
@@ -383,7 +366,6 @@ class NotificationService:
             type_bg = "#e2e8f0" if s['type'] == '監控觀察股' else "#feebc8"
             status_style = "color:red; font-weight:bold;" if "🎯" in s['status'] or "⚠️" in s['status'] else "color:#38a169;"
             
-            # 🟢 K 值低於 15 時自動套用紅字粗體
             k_threshold = getattr(config, 'K_THRESHOLD', 15)
             is_nan_k = pd.isna(s['k'])
             k_style = "color:red; font-weight:bold;" if not is_nan_k and s['k'] < k_threshold else ""
@@ -400,7 +382,7 @@ class NotificationService:
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:right; {k_style}'>{k_str}</td>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{d_str}</td>"
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:right;'>{osc_str}</td>"
-                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'>{s['target_or_cost']}</td>" # 🟢 已不再包含成本數字
+                f"<td style='padding:10px; border:1px solid #ddd; text-align:center;'>{s['target_or_cost']}</td>" 
                 f"<td style='padding:10px; border:1px solid #ddd; text-align:center; {status_style}'>{s['status']}</td>"
                 f"</tr>"
             )
@@ -420,7 +402,8 @@ class StrategyOrchestrator:
         self.repo = StockDataRepository(BASE_DIR)
         self.notifier = NotificationService()
 
-def execute_pipeline(self) -> None:
+    # 💡 修正 2：補上 4 個空格的縮進，讓它重新回到 StrategyOrchestrator 類別中！
+    def execute_pipeline(self) -> None:
         is_bull_market, market_text = MarketIndicatorService.check_macro_regime()
         structured_alerts, all_stocks_output, global_stock_pool = [], [], {}
         triggered_exit_stocks = set()
@@ -455,7 +438,7 @@ def execute_pipeline(self) -> None:
                     status_str = "✅ 持股安全"
                     if current_price <= avg_cost:
                         if is_bull_market:
-                            status_str = "🔄 智慧緩衝"  # 隱訊號，不推入上方警示
+                            status_str = "🔄 智慧緩衝"  
                         else:
                             structured_alerts.append({
                                 'icon': '🛑', 'type': '鐵律清倉停損', 'name': c_name, 'close': f"{current_price:.2f}", 
@@ -499,21 +482,19 @@ def execute_pipeline(self) -> None:
                     current_price = latest['Close']
                     s_id_str = str(latest['id'])
                     
-                    # 💡 整合點：根據有無 Presets 理論計算，再經由 round_to_tw_tick 修正為實戰掛單價
                     if s_id_str in DIVIDEND_PRESETS:
                         cfg = DIVIDEND_PRESETS[s_id_str]
                         raw_target = ((cfg['div_2026'] + cfg['div_2027']) / 2) / (cfg['target_yield'] / 100)
-                        target_price = round_to_tw_tick(raw_target)  # 👈 轉為合法 Tick 價
+                        target_price = round_to_tw_tick(raw_target)  
                         diff_pct = ((current_price - target_price) / target_price) * 100
                         status_str = f"溢價 {diff_pct:.1f}%"
                     else:
                         raw_target = current_price * 0.85
-                        target_price = round_to_tw_tick(raw_target)  # 👈 轉為合法 Tick 價
+                        target_price = round_to_tw_tick(raw_target)  
                         status_str = "溢價 17.6%"
                     
                     is_already_owned = (c_name in global_stock_pool)
                     
-                    # 檢查是否觸發買進/加碼（這裡比對的 target_price 已是合法的真實 Tick 價格）
                     is_triggered = False
                     if current_price <= target_price and c_name not in triggered_exit_stocks:
                         is_triggered = True
@@ -524,7 +505,6 @@ def execute_pipeline(self) -> None:
                             structured_alerts.append({'icon': '🎯', 'type': '監控買進提示', 'name': c_name, 'close': f"{current_price:.2f}", 'line2': f"買進目標: {target_price:.2f}", 'desc': "已達大波段安全安全邊際，建議分批佈局。"})
                             status_str = "🎯 已達買點"
 
-                    # 👑 雜訊過濾閘門：未達標且帶有「溢價」文字的監控項目，直接踢除不顯示
                     if not is_triggered and "溢價" in status_str:
                         continue
 
@@ -538,9 +518,11 @@ def execute_pipeline(self) -> None:
                     })
             except Exception as e: logger.error(f"監控觀察模組執行失敗: {e}")
 
-        # 3. 第三階段：寄出報表（並傳入風控名單，阻斷置頂面板盲目加碼）
+        # 3. 第三階段：寄出報表
         if all_stocks_output:
             self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output, global_stock_pool, triggered_exit_stocks)
-        if __name__ == "__main__":
-            orchestrator = StrategyOrchestrator()
-            orchestrator.execute_pipeline()
+
+# 💡 修正 1：將主入口退回最外層（0 縮進），使其能夠被正確發動
+if __name__ == "__main__":
+    orchestrator = StrategyOrchestrator()
+    orchestrator.execute_pipeline()

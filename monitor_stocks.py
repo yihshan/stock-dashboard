@@ -237,6 +237,35 @@ class MarketIndicatorService:
         return dif, macd_line, osc
 
     @staticmethod
+    def get_macro_multiplier() -> float:
+        """
+        🟢 全新總經自適應大腦：
+        根據大盤相對於200MA的乖離率，動態產出殖利率的「修正係數」
+        """
+        try:
+            twii = yf.Ticker("^TWII")
+            df = twii.history(period="1y")
+            df['200MA'] = df['Close'].rolling(window=200).mean()
+            
+            current_close = df['Close'].iloc[-1]
+            ma200 = df['200MA'].iloc[-1]
+            
+            # 計算大盤相對於年線的乖離率 (Bias)
+            bias = (current_close - ma200) / ma200
+            
+            # 總經修正邏輯：
+            # 如果 bias > 0.1 (大盤狂飆高於年線 10% 以上)，資金寬鬆，要求殖利率調降 10% (乘以 0.9) ➜ 目標價調高
+            # 如果 bias < -0.05 (大盤低於年線 5% 以上)，市場恐慌，要求殖利率提高 15% (乘以 1.15) ➜ 目標價嚴格壓低
+            if bias > 0.10:
+                return 0.90  
+            elif bias < -0.05:
+                return 1.15  
+            else:
+                return 1.00  # 正常景氣環境，不修正
+        except:
+            return 1.00  # 連線異常時降級回歸標準矩陣
+
+    @staticmethod
     def check_macro_regime() -> Tuple[bool, str]:
         try:
             twii = yf.Ticker("^TWII")
@@ -262,7 +291,9 @@ class NotificationService:
         lines = [f"{a['icon']} [{a['type']}] {a['name']}\n- 今日收盤: {a['close']}\n- {a['line2']}\n- 說明: {a['desc']}" for a in alerts]
         send_line_message(getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', ''), getattr(config, 'LINE_USER_ID', ''), f"\n📊 【台股雙多智慧策略決策報告】\n基準日: {report_date}\n" + "\n------------\n".join(lines))
 
-    def send_html_email(self, report_date: str, market_text: str, alerts: List[Dict[str, str]], all_stocks: List[Dict[str, Any]], global_stock_pool: Dict[str, Any]) -> None:
+    # 🟢 修正：加入 triggered_exits 參數
+        def send_html_email(self, report_date: str, market_text: str, alerts: List[Dict[str, str]], all_stocks: List[Dict[str, Any]], global_stock_pool: Dict[str, Any], triggered_exits: set) -> None:
+        msg = MIMEMultipart()
         msg = MIMEMultipart()
         msg['Subject'] = f"📊 台股雙多智慧策略決策報告與診斷總覽 - {report_date}"
         msg['From'] = self.email_user
@@ -280,7 +311,11 @@ class NotificationService:
             current_price = price_map.get(str(s_id)) or name_price_map.get(cfg['name'])
             is_owned = (cfg['name'] in global_stock_pool)
             
-            if current_price and current_price <= calc_target:
+            # 💡 核心修正：即便價格低於買點，但如果該個股已經觸發風控出場（停利/停損），強制切換描述！
+            if cfg['name'] in triggered_exits:
+                path_desc = "<span style='color:#718096; font-weight:bold;'>🛑 風控鎖定：策略執行出場中</span><br><small style='color:#718096;'>已觸發移動停利/停損線 ➜ <b>請先執行落袋/避險，禁止加碼</b></small>"
+                defense_desc = "⚠️ 技術面破位，進入風控保護程序"
+            elif current_price and current_price <= calc_target:
                 if is_owned:
                     path_desc = "<span style='color:#e53e3e; font-weight:bold;'>🎯 路徑 2：現價 ≦ 買點 (有持股)</span><br><small style='color:#e53e3e;'>已達估值甜蜜區 ➜ <b>執行大波段逢低加碼</b></small>"
                 else:
@@ -479,8 +514,8 @@ class StrategyOrchestrator:
             except Exception as e: logger.error(f"監控觀察模組執行失敗: {e}")
 
         if all_stocks_output:
-            self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output, global_stock_pool)
-
+            # 🟢 修正：將 triggered_exit_stocks 傳入，讓置頂面板與風控同步
+            self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output, global_stock_pool, triggered_exit_stocks)
 if __name__ == "__main__":
     orchestrator = StrategyOrchestrator()
     orchestrator.execute_pipeline()

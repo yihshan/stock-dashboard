@@ -29,6 +29,10 @@ except Exception:
     EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
+    # 🟢 修正：將 LINE 變數完美塞入 GitHub Secrets 讀取鏈
+    LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+    LINE_USER_ID = os.getenv("LINE_USER_ID", "")
+
 # 收件人清單
 RECIPIENTS = [
     "ihsiang.tsou@gmail.com"

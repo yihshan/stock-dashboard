@@ -1,5 +1,9 @@
 import os
 from pathlib import Path
+import os
+# 🟢 這裡的 os.getenv("字串") 必須與 GitHub Secrets 的 Name 完全一模一樣
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+LINE_USER_ID = os.getenv("LINE_USER_ID", "")
 
 # 📊 台股監控系統郵件設定檔
 

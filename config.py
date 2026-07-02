@@ -1,38 +1,43 @@
 import os
+import logging
 from pathlib import Path
 
-# 📊 台股監控系統郵件設定檔
+logger = logging.getLogger(__name__)
 
-# 取得目前專案根目錄，並將資料夾指向專案內的 'data' 資料夾
+# 📊 台股監控系統郵件與 LINE 整合設定檔
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 
-# SMTP 伺服器設定
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 
-# 從環境變數讀取機密資訊 (支援 GitHub Actions 與 Streamlit 環境)
+# 從環境變數讀取機密資訊
 try:
-    # Streamlit 雲端環境專用的讀取方式
+    # 👑 1. 嘗試 Streamlit 雲端憑證鏈
     import streamlit as st
     EMAIL_USER = st.secrets.get("EMAIL_USER", os.getenv("EMAIL_USER", "ihsiang.tsou@gmail.com"))
     EMAIL_PASSWORD = st.secrets.get("EMAIL_PASSWORD", os.getenv("EMAIL_PASSWORD", ""))
     GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
 
-    # 🟢 修正：將 LINE 變數完美塞入 Streamlit 安全憑證鏈
     LINE_CHANNEL_ACCESS_TOKEN = st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""))
     LINE_USER_ID = st.secrets.get("LINE_USER_ID", os.getenv("LINE_USER_ID", ""))
     
 except Exception:
-    # GitHub Actions 執行時的讀取方式
+    # 👑 2. 降級回歸 GitHub Actions / 本地環境憑證鏈
     EMAIL_USER = os.getenv("EMAIL_USER", "ihsiang.tsou@gmail.com")
     EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-    # 🟢 修正：將 LINE 變數完美塞入 GitHub Secrets 讀取鏈
     LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
     LINE_USER_ID = os.getenv("LINE_USER_ID", "")
 
+# 🛠️ 終極防禦：如果在 Actions 區塊讀取失敗，嘗試直接做全域強抓
+if not LINE_CHANNEL_ACCESS_TOKEN:
+    LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+if not LINE_USER_ID:
+    LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
+    
 # 收件人清單
 RECIPIENTS = [
     "ihsiang.tsou@gmail.com"

@@ -1,9 +1,5 @@
 import os
 from pathlib import Path
-import os
-# 🟢 這裡的 os.getenv("字串") 必須與 GitHub Secrets 的 Name 完全一模一樣
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
-LINE_USER_ID = os.getenv("LINE_USER_ID", "")
 
 # 📊 台股監控系統郵件設定檔
 
@@ -22,6 +18,11 @@ try:
     EMAIL_USER = st.secrets.get("EMAIL_USER", os.getenv("EMAIL_USER", "ihsiang.tsou@gmail.com"))
     EMAIL_PASSWORD = st.secrets.get("EMAIL_PASSWORD", os.getenv("EMAIL_PASSWORD", ""))
     GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
+
+    # 🟢 修正：將 LINE 變數完美塞入 Streamlit 安全憑證鏈
+    LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+    LINE_USER_ID = os.getenv("LINE_USER_ID", "")
+    
 except Exception:
     # GitHub Actions 執行時的讀取方式
     EMAIL_USER = os.getenv("EMAIL_USER", "ihsiang.tsou@gmail.com")
@@ -35,10 +36,10 @@ RECIPIENTS = [
 
 # 密件副本收件人清單
 BCC_RECIPIENTS = [
-    "pp4740qq@gmail.com",
-    "a0939390292@gmail.com",
-    "sk.hsieh@yahoo.com.tw",
-    "ywho6907@gmail.com"
+    #"pp4740qq@gmail.com",
+    #"a0939390292@gmail.com",
+    #"sk.hsieh@yahoo.com.tw",
+    #"ywho6907@gmail.com"
 ]
 
 # 技術分析參數

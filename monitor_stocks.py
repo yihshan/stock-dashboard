@@ -518,9 +518,13 @@ class StrategyOrchestrator:
                     })
             except Exception as e: logger.error(f"監控觀察模組執行失敗: {e}")
 
-        # 3. 第三階段：寄出報表
+        # 3. 第三階段：寄出報表與發送 LINE
         if all_stocks_output:
+            # 📨 寄出網頁版 Email 診斷總覽
             self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output, global_stock_pool, triggered_exit_stocks)
+            
+            # 🟢 核心修正：觸發 LINE 訊息推播，將即時買賣警示發到您的手機
+            self.notifier.send_line(structured_alerts, self.repo.report_date)
 
 # 💡 修正 1：將主入口退回最外層（0 縮進），使其能夠被正確發動
 if __name__ == "__main__":

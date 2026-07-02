@@ -298,7 +298,11 @@ class NotificationService:
     def send_line(self, alerts: List[Dict[str, str]], report_date: str) -> None:
         if not alerts: return
         lines = [f"{a['icon']} [{a['type']}] {a['name']}\n- 今日收盤: {a['close']}\n- {a['line2']}\n- 說明: {a['desc']}" for a in alerts]
-        send_line_message(getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', ''), getattr(config, 'LINE_USER_ID', ''), f"\n📊 【台股雙多智慧策略決策報告】\n基準日: {report_date}\n" + "\n------------\n".join(lines))
+        send_line_message(
+            getattr(config, 'LINE_CHANNEL_ACCESS_TOKEN', ''),
+            getattr(config, 'LINE_USER_ID', ''),
+            f"\n📊 【台股雙多智慧策略決策報告】\n基準日: {report_date}\n" + "\n------------\n".join(lines)
+        )
 
     def send_html_email(self, report_date: str, market_text: str, alerts: List[Dict[str, str]], all_stocks: List[Dict[str, Any]], global_stock_pool: Dict[str, Any], triggered_exits: set) -> None:
         msg = MIMEMultipart()

@@ -20,8 +20,8 @@ try:
     GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
 
     # 🟢 修正：將 LINE 變數完美塞入 Streamlit 安全憑證鏈
-    LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
-    LINE_USER_ID = os.getenv("LINE_USER_ID", "")
+    LINE_CHANNEL_ACCESS_TOKEN = st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""))
+    LINE_USER_ID = st.secrets.get("LINE_USER_ID", os.getenv("LINE_USER_ID", ""))
     
 except Exception:
     # GitHub Actions 執行時的讀取方式

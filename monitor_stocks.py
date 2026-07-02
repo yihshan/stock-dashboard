@@ -71,9 +71,7 @@ DIVIDEND_PRESETS = {
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ==========================================
-# 工具函式區
-# ==========================================
+
 def clean_price(val: Any) -> float:
     if pd.isna(val): return np.nan
     s = str(val).replace(',', '').strip()
@@ -81,21 +79,24 @@ def clean_price(val: Any) -> float:
     try: return float(s)
     except ValueError: return np.nan
 
+
 def clean_stock_id(val: Any) -> str:
     if pd.isna(val): return ""
     s = str(val).strip()
     s = re.sub(r'[="\'\s]', '', s)
     s = s.split('.')[0]
-    if s.isdigit() and len(s) < 4: return s.zfill(4)
+    if s.isdigit() and len(s) < 4:
+        return s.zfill(4)
     return s
+
 
 def clean_stock_name(val: Any) -> str:
     if pd.isna(val): return ""
     s = str(val).strip()
     s = re.sub(r'\(.*?\)', '', s)
     s = re.sub(r'\[.*?\]', '', s)
-    return s.replace(' ', '')
-
+    return s.replace(' ', '').replace(' ', '')
+    
 def round_to_tw_tick(price: float) -> float:
     if pd.isna(price) or price <= 0: return 0.0
     if price < 10: return np.floor(price * 100) / 100
@@ -135,9 +136,7 @@ class DateDataParser:
             return datetime.strptime(d, '%Y%m%d').date() if len(d) == 8 else date(int(d[:3]) + 1911, int(d[3:5]), int(d[5:]))
         return None
 
-# ==========================================
-# 核心服務模組
-# ==========================================
+
 class StockDataRepository:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
@@ -200,10 +199,13 @@ class StockDataRepository:
         target_id = clean_stock_id(stock_id)
         target_name = clean_stock_name(stock_name)
         
-        if target_id: df_res = self.master_df[self.master_df['id'] == target_id]
-        else: df_res = self.master_df[self.master_df['name'] == target_name]
+        if target_id:
+            df_res = self.master_df[self.master_df['id'] == target_id]
+        else:
+            df_res = self.master_df[self.master_df['name'] == target_name]
             
         return df_res.sort_values('Date').drop_duplicates('Date').reset_index(drop=True)
+
 
 class MarketIndicatorService:
     @staticmethod
@@ -243,9 +245,6 @@ class MarketIndicatorService:
 
     @staticmethod
     def get_macro_status() -> Tuple[bool, str, float]:
-        """
-        統一抓取總體經濟狀態，包含大盤年線與總經殖利率動態修正係數
-        """
         try:
             twii = yf.Ticker("^TWII")
             df = twii.history(period="1y")
@@ -267,9 +266,6 @@ class MarketIndicatorService:
 
     @staticmethod
     def calculate_dynamic_target(cfg: dict, macro_multiplier: float) -> float:
-        """
-        統一估值引擎：結合預估股利、要求殖利率、總經修正係數，並強制輸出台股 Tick 規格化價格
-        """
         avg_div = (cfg['div_2026'] + cfg['div_2027']) / 2
         dynamic_yield = (cfg['target_yield'] * macro_multiplier) / 100
         if dynamic_yield <= 0: return 0.0
@@ -302,7 +298,6 @@ class NotificationService:
         name_price_map = {s['name']: s['close'] for s in all_stocks}
 
         for s_id, cfg in DIVIDEND_PRESETS.items():
-            # 呼叫統一估值引擎
             calc_target = MarketIndicatorService.calculate_dynamic_target(cfg, macro_multiplier)
             current_price = price_map.get(str(s_id)) or name_price_map.get(cfg['name'])
             is_owned = (cfg['name'] in global_stock_pool)
@@ -392,159 +387,132 @@ class StrategyOrchestrator:
         self.notifier = NotificationService()
 
     def execute_pipeline(self) -> None:
-        # 統一獲取全域總經狀態與修正係數
         is_bull_market, market_text, macro_multiplier = MarketIndicatorService.get_macro_status()
         
         structured_alerts, all_stocks_output, global_stock_pool = [], [], {}
         triggered_exit_stocks = set()
         
-        # ==========================================
-        # 1. 庫存部位風控掃描 (State Machine Logic)
-        # ==========================================
+        inventory_data = {}
+        monitor_data = set()
+        
         if INVENTORY_FILE.exists():
             try:
                 inv_df = pd.read_excel(INVENTORY_FILE)
-                inv_name_col = next((c for c in inv_df.columns if any(x in str(c) for x in ['名稱', '股票', '代號'])), inv_df.columns[0])
-                inv_cost_col = next((c for c in inv_df.columns if any(x in str(c) for x in ['成本', '價位', '均價', '買進價', '成交價'])), None)
-                inv_date_col = next((c for c in inv_df.columns if '日期' in str(c)), None)
-                
-                for name, group in inv_df.groupby(inv_name_col):
-                    c_name = clean_stock_name(name)
-                    if not c_name: continue
-                    hist_df = self.repo.get_history("", c_name)
-                    if hist_df.empty: continue
-                    
-                    latest = hist_df.iloc[-1]
-                    current_price = latest['Close']
-                    
-                    # 判斷是否具備真實成本數據，避免盲目觸發停損/停利
-                    has_real_cost = False
-                    avg_cost = current_price
-                    if inv_cost_col:
-                        cost_val = group[inv_cost_col].mean()
-                        if pd.notna(cost_val) and cost_val > 0:
-                            has_real_cost = True
-                            avg_cost = cost_val
-                    
-                    buy_date = DateDataParser.parse_generic_date(group[inv_date_col].iloc[0]) if inv_date_col else None
-                    if buy_date:
-                        post_buy_df = hist_df[hist_df['Date'] >= buy_date]
-                        highest_p = post_buy_df['Close'].max() if not post_buy_df.empty else current_price
-                    else:
-                        highest_p = hist_df['Close'].max()
+                if '股票名稱' in inv_df.columns and '成本' in inv_df.columns:
+                    for name, group in inv_df.groupby('股票名稱'):
+                        c_name = clean_stock_name(name)
+                        if not c_name: continue
                         
-                    if pd.isna(highest_p) or highest_p == 0: highest_p = current_price
+                        avg_cost = group['成本'].mean()
+                        file_highest_p = group['波段最高'].max() if '波段最高' in inv_df.columns else None
+                        tp_pct = group['停利百分比'].iloc[0] / 100.0 if '停利百分比' in inv_df.columns else 0.15
+                        
+                        inventory_data[c_name] = {
+                            'avg_cost': avg_cost,
+                            'highest_p': file_highest_p,
+                            'tp_pct': tp_pct
+                        }
+            except Exception as e: logger.error(f"庫存資料讀取失敗: {e}")
 
-                    # --- 布林狀態機：確保邏輯互斥 ---
-                    is_hard_stop = has_real_cost and (current_price <= avg_cost) and (not is_bull_market)
-                    is_buffer    = has_real_cost and (current_price <= avg_cost) and is_bull_market
-                    # 停利條件：跌破波段高點85%，且(已知有獲利 或 缺乏成本無法判斷虧損)
-                    is_trailing_stop = (current_price <= highest_p * 0.85) and (not has_real_cost or current_price > avg_cost)
-                    
-                    status_str = "✅ 持股安全"
-                    
-                    if is_hard_stop:
-                        structured_alerts.append({
-                            'icon': '🛑', 'type': '鐵律清倉停損', 'name': c_name, 'close': f"{current_price:.2f}", 
-                            'line2': "狀態: 跌破防守線", 'desc': "大盤走空，請嚴守資金紀律全數清倉避險！",
-                            'is_monitor_alert': False
-                        })
-                        status_str = "🛑 鐵律停損"
-                        triggered_exit_stocks.add(c_name)
-                    elif is_buffer:
-                        status_str = "🔄 智慧緩衝"
-                    elif is_trailing_stop:
-                        structured_alerts.append({
-                            'icon': '⚠️', 'type': '庫存移動停利', 'name': c_name, 'close': f"{current_price:.2f}", 
-                            'line2': f"波段最高: {highest_p:.2f}", 'desc': f"觸發移動停利線 ({round_to_tw_tick(highest_p*0.85):.2f})，建議獲利落袋。",
-                            'is_monitor_alert': False
-                        })
-                        status_str = "⚠️ 移動停利"
-                        triggered_exit_stocks.add(c_name)
-
-                    df_idx = MarketIndicatorService.calculate_kd9(hist_df)
-                    _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
-                    
-                    res = {
-                        'name': c_name, 'id': latest['id'], 'type': '現有庫存股', 'close': current_price, 
-                        'k': df_idx.iloc[-1]['K'], 'd': df_idx.iloc[-1]['D'], 'osc': osc_s.iloc[-1], 
-                        'target_or_cost': "庫存持有中", 'status': status_str
-                    }
-                    all_stocks_output.append(res)
-                    global_stock_pool[c_name] = res
-            except Exception as e: logger.error(f"庫存風控模組執行失敗: {e}")
-
-        # ==========================================
-        # 2. 監控名單估值掃描
-        # ==========================================
         if MONITOR_FILE.exists():
             try:
-                monitor_df = pd.read_excel(MONITOR_FILE)
-                name_col = next((col for col in monitor_df.columns if '名稱' in str(col)), monitor_df.columns[0])
-                
-                for _, row in monitor_df.iterrows():
-                    c_name = clean_stock_name(row[name_col])
-                    if not c_name: continue
-                    df = self.repo.get_history("", c_name)
-                    if df.empty: continue
-                    
-                    latest = df.iloc[-1]
-                    current_price = latest['Close']
-                    s_id_str = str(latest['id'])
-                    
-                    if s_id_str in DIVIDEND_PRESETS:
-                        cfg = DIVIDEND_PRESETS[s_id_str]
-                        # 呼叫統一估值引擎
-                        target_price = MarketIndicatorService.calculate_dynamic_target(cfg, macro_multiplier)
-                        diff_pct = ((current_price - target_price) / target_price) * 100 if target_price > 0 else 0
-                        status_str = f"溢價 {diff_pct:.1f}%"
-                    else:
-                        target_price = round_to_tw_tick(current_price * 0.85)
-                        status_str = "未建檔估值"
-                    
-                    is_already_owned = (c_name in global_stock_pool)
-                    is_triggered = False
-                    
-                    # 若跌破買點，且未被第一階段判定為停損停利狀態
-                    if target_price > 0 and current_price <= target_price and c_name not in triggered_exit_stocks:
-                        is_triggered = True
-                        if is_already_owned:
-                            structured_alerts.append({
-                                'icon': '🔄', 'type': '庫存逢低加碼提示', 'name': c_name, 'close': f"{current_price:.2f}", 
-                                'line2': f"加碼目標: {target_price:.2f}", 'desc': "波段趨勢安全，已達估值加倉區間，建議分批加碼。",
-                                'is_monitor_alert': True
-                            })
-                            status_str = "🔄 建議加碼"
-                        else:
-                            structured_alerts.append({
-                                'icon': '🎯', 'type': '監控買進提示', 'name': c_name, 'close': f"{current_price:.2f}", 
-                                'line2': f"買進目標: {target_price:.2f}", 'desc': "已達大波段安全邊際，建議分批佈局。",
-                                'is_monitor_alert': True
-                            })
-                            status_str = "🎯 已達買點"
+                mon_df = pd.read_excel(MONITOR_FILE)
+                m_name_col = '股票名稱' if '股票名稱' in mon_df.columns else mon_df.columns[0]
+                for name in mon_df[m_name_col]:
+                    c_name = clean_stock_name(name)
+                    if c_name: monitor_data.add(c_name)
+            except Exception as e: logger.error(f"監控資料讀取失敗: {e}")
 
-                    # 雜訊過濾：未觸發且帶有溢價/未建檔字眼者隱藏
-                    if not is_triggered and ("溢價" in status_str or "未建檔" in status_str):
+        all_unique_stocks = set(inventory_data.keys()).union(monitor_data)
+
+        for c_name in all_unique_stocks:
+            try:
+                hist_df = self.repo.get_history("", c_name)
+                if hist_df.empty: continue
+                
+                latest = hist_df.iloc[-1]
+                current_price = latest['Close']
+                s_id_str = str(latest['id'])
+                
+                is_owned = c_name in inventory_data
+                is_monitored = c_name in monitor_data
+                
+                avg_cost = inventory_data[c_name]['avg_cost'] if is_owned else 0
+                tp_pct = inventory_data[c_name]['tp_pct'] if is_owned else 0.15
+                highest_p = inventory_data[c_name]['highest_p'] if is_owned and pd.notna(inventory_data[c_name]['highest_p']) else hist_df['Close'].max()
+                
+                target_price = 0
+                if is_monitored and s_id_str in DIVIDEND_PRESETS:
+                    cfg = DIVIDEND_PRESETS[s_id_str]
+                    target_price = MarketIndicatorService.calculate_dynamic_target(cfg, macro_multiplier)
+                elif is_monitored:
+                    target_price = round_to_tw_tick(current_price * 0.85)
+
+                status_str = ""
+                
+                if is_owned and current_price <= avg_cost and not is_bull_market:
+                    status_str = "🛑 鐵律停損"
+                    structured_alerts.append({
+                        'icon': '🛑', 'type': '鐵律清倉停損', 'name': c_name, 'close': f"{current_price:.2f}", 
+                        'line2': "狀態: 跌破防守線", 'desc': "大盤走空，請嚴守資金紀律全數清倉避險！", 'is_monitor_alert': False
+                    })
+                    triggered_exit_stocks.add(c_name)
+                    
+                # 🛡️ 實質獲利鎖：必須「現價 > 成本」才允許進入停利判定
+                elif is_owned and current_price > avg_cost and current_price <= highest_p * (1 - tp_pct):
+                    status_str = "⚠️ 移動停利"
+                    structured_alerts.append({
+                        'icon': '⚠️', 'type': '庫存移動停利', 'name': c_name, 'close': f"{current_price:.2f}", 
+                        'line2': f"波段最高: {highest_p:.2f}", 'desc': f"觸發移動停利線 ({round_to_tw_tick(highest_p*(1-tp_pct)):.2f})，建議獲利落袋。", 'is_monitor_alert': False
+                    })
+                    triggered_exit_stocks.add(c_name)
+                    
+                elif is_monitored and target_price > 0 and current_price <= target_price:
+                    if is_owned:
+                        status_str = "🔄 建議加碼"
+                        structured_alerts.append({
+                            'icon': '🔄', 'type': '庫存逢低加碼提示', 'name': c_name, 'close': f"{current_price:.2f}", 
+                            'line2': f"加碼目標: {target_price:.2f}", 'desc': "波段趨勢安全，已達估值加倉區間，建議分批加碼。", 'is_monitor_alert': True
+                        })
+                    else:
+                        status_str = "🎯 已達買點"
+                        structured_alerts.append({
+                            'icon': '🎯', 'type': '監控買進提示', 'name': c_name, 'close': f"{current_price:.2f}", 
+                            'line2': f"買進目標: {target_price:.2f}", 'desc': "已達大波段安全邊際，建議分批佈局。", 'is_monitor_alert': True
+                        })
+                        
+                elif is_owned and current_price <= avg_cost and is_bull_market:
+                    status_str = "🔄 智慧緩衝"
+                    
+                else:
+                    if is_owned:
+                        status_str = "✅ 持股安全"
+                    else:
+                        diff_pct = ((current_price - target_price) / target_price) * 100 if target_price > 0 else 0
+                        status_str = f"溢價 {diff_pct:.1f}%" if target_price > 0 else "未建檔估值"
                         continue
 
-                    df_idx = MarketIndicatorService.calculate_kd9(df)
-                    _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
+                df_idx = MarketIndicatorService.calculate_kd9(hist_df)
+                _, _, osc_s = MarketIndicatorService.calculate_macd(df_idx)
+                
+                all_stocks_output.append({
+                    'name': c_name, 'id': latest['id'], 
+                    'type': '現有庫存股' if is_owned else '監控觀察股', 
+                    'close': current_price,
+                    'k': df_idx.iloc[-1]['K'], 'd': df_idx.iloc[-1]['D'], 'osc': osc_s.iloc[-1],
+                    'target_or_cost': f"目標: {target_price:.2f}" if is_monitored and target_price > 0 else "庫存持有中", 
+                    'status': status_str
+                })
+                
+                if is_owned:
+                    global_stock_pool[c_name] = {'close': current_price}
                     
-                    all_stocks_output.append({
-                        'name': c_name, 'id': latest['id'], 'type': '監控觀察股', 'close': current_price,
-                        'k': df_idx.iloc[-1]['K'], 'd': df_idx.iloc[-1]['D'], 'osc': osc_s.iloc[-1],
-                        'target_or_cost': f"目標: {target_price:.2f}", 'status': status_str
-                    })
-            except Exception as e: logger.error(f"監控觀察模組執行失敗: {e}")
+            except Exception as e: logger.error(f"處理個股 {c_name} 執行失敗: {e}")
 
-        # ==========================================
-        # 3. 訊號分流與派送
-        # ==========================================
         if all_stocks_output:
-            # Email 接收全量綜合診斷 (傳入 macro_multiplier 確保 HTML 面板估值同步)
             self.notifier.send_html_email(self.repo.report_date, market_text, structured_alerts, all_stocks_output, global_stock_pool, triggered_exit_stocks, macro_multiplier)
             
-            # LINE 僅接收觀察股落地買點通知
+            # 🟢 嚴格分流：LINE 只放行帶有 'is_monitor_alert': True 的訊號
             only_monitor_alerts = [a for a in structured_alerts if a.get('is_monitor_alert', False)]
             if only_monitor_alerts:
                 self.notifier.send_line(only_monitor_alerts, self.repo.report_date)

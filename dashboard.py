@@ -26,114 +26,140 @@ except ImportError:
 # 設定頁面
 st.set_page_config(page_title="台股投資分析報告 v3.9.1", layout="wide")
 
-# --- CSS 樣式 ---
-st.markdown("""
-    <style>
-    h1, h2, h3 { color: #1a365d; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-    .report-table { width: 100%; border-collapse: collapse; margin-top: 20px; font-family: 'Segoe UI', sans-serif; }
-    .report-table th { background-color: #f1f3f5; color: #1a365d; font-weight: bold; text-align: center !important; padding: 12px; border: 1px solid #dee2e6; }
-    .report-table td { padding: 10px; border: 1px solid #dee2e6; text-align: right; }
-    .report-table td:first-child { text-align: center; }
-    .neg-value { color: #dc3545; font-weight: bold; }
-    .kpi-box { padding: 20px; border-radius: 10px; background-color: #f8f9fa; border: 1px solid #dee2e6; text-align: center; }
-    .kpi-label { font-size: 1rem; color: #6c757d; margin-bottom: 5px; }
-    .kpi-value { font-size: 1.8rem; font-weight: bold; color: #1a365d; }
-    .kpi-value-red { font-size: 1.8rem; font-weight: bold; color: #dc3545; }
-    .news-box { background-color: #fff9db; padding: 15px; border-left: 5px solid #fcc419; border-radius: 5px; margin-bottom: 20px; }
-    .news-title { font-weight: bold; color: #856404; margin-bottom: 5px; }
-    .news-content { font-size: 0.95rem; color: #555; }
-    </style>
-    """, unsafe_allow_html=True)
+# --- 1. 動態個股新聞分析模組 ---
+@st.cache_data(ttl=3600)
+def fetch_portfolio_news(api_key, stock_names):
+    if not api_key or not stock_names: return None
+    search_query = " OR ".join([f'"{name}"' for name in stock_names[:5]])
+    news_items = []
+    try:
+        url = f"https://news.google.com/rss/search?q={urllib.parse.quote(search_query + ' 股市')}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10, verify=False)
+        for item in ET.fromstring(response.text).findall('./channel/item')[:8]:
+            news_items.append(f"- {item.find('title').text}")
+    except Exception: return None
+        
+    if not news_items: return None
+    try:
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+        headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
+        prompt = (
+            f"以下是關於您持倉股票 ({', '.join(stock_names)}) 的新聞標題：\n{chr(10).join(news_items)}\n\n"
+            "請扮演專業分析師，總結 4 則盤前監控重點。請只輸出 JSON 陣列格式：[{\"title\": \"🚀 標題\", \"content\": \"摘要\"}]"
+        )
+        resp = requests.post(api_url, json={"contents": [{"parts": [{"text": prompt}]}]}, headers=headers, timeout=20, verify=False)
+        if resp.status_code == 200:
+            text = resp.json()['candidates'][0]['content']['parts'][0]['text']
+            return json.loads(text.replace("```json", "").replace("```", "").strip())
+    except Exception: pass
+    return None
 
-# --- 資料路徑 ---
+# --- 2. 工具函式 ---
 BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 FEE_RATE, TAX_RATE, MIN_FEE = 0.001425, 0.003, 20
 
-# --- 工具函式 ---
-@st.cache_data(ttl=3600)
-def fetch_portfolio_news(api_key, stock_names):
-    if not api_key or not stock_names: return None
+def format_finance(val, is_percent=False):
+    if val is None: return ""
+    suffix = "%" if is_percent else ""
+    abs_val = abs(val)
+    val_str = f"{abs_val:,.2f}{suffix}" if is_percent else f"{abs_val:,.0f}{suffix}"
+    return f'<span class="neg-value">({val_str})</span>' if val < 0 else val_str
+
+def format_finance_plain(val, is_percent=False):
     try:
-        url = f"https://news.google.com/rss/search?q={urllib.parse.quote(' OR '.join([f'\"{n}\"' for n in stock_names[:5]]) + ' 股市')}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10, verify=False)
-        items = ET.fromstring(response.text).findall('./channel/item')[:8]
-        news_list = [f"- {item.find('title').text}" for item in items]
-        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
-        resp = requests.post(api_url, json={"contents": [{"parts": [{"text": f"分析:\n{chr(10).join(news_list)}\n輸出 JSON：[{{\"title\": \"標題\", \"content\": \"摘要\"}}]"}]}]}, headers={'Content-Type': 'application/json', 'x-goog-api-key': api_key}, timeout=20, verify=False)
-        return json.loads(resp.json()['candidates'][0]['content']['parts'][0]['text'].replace("```json", "").replace("```", "").strip())
-    except: return None
+        val = float(val)
+        fmt = f"{val:.2f}%" if is_percent else f"{val:,.0f}"
+        if val < 0: return f'<span style="color:red">({abs(val):,.0f})</span>' if not is_percent else f'<span style="color:red">({abs(val):.2f}%)</span>'
+        return fmt
+    except: return str(val)
+
+def calculate_net_pnl(cost, price, shares):
+    total_cost_base = cost * shares
+    total_market_value = price * shares
+    sell_fee = max(MIN_FEE, total_market_value * FEE_RATE)
+    sell_tax = total_market_value * TAX_RATE
+    net_pnl = total_market_value - total_cost_base - max(MIN_FEE, total_cost_base * FEE_RATE) - sell_fee - sell_tax
+    return net_pnl, total_market_value, sell_fee + sell_tax
 
 def parse_date(val):
     if pd.isna(val): return None
     if isinstance(val, (datetime, date)): return val.date()
     s = str(val).strip().split(' ')[0]
     digits = re.sub(r'\D', '', s)
-    return datetime.strptime(digits, '%Y%m%d').date() if len(digits) == 8 else None
+    if len(digits) == 8:
+        try: return datetime.strptime(digits, '%Y%m%d').date()
+        except: pass
+    return None
 
-def calculate_net_pnl(cost, price, shares):
-    val = price * shares
-    fee = max(MIN_FEE, cost * shares * FEE_RATE) + max(MIN_FEE, val * FEE_RATE)
-    tax = val * TAX_RATE
-    return val - (cost * shares) - fee - tax, val, fee + tax
-
-def format_finance_plain(val, is_percent=False):
-    try:
-        val = float(val)
-        if is_percent: return f"{val:.2f}%"
-        if val < 0: return f'<span style="color:red">({abs(val):,.0f})</span>'
-        return f"{val:,.0f}"
-    except: return str(val)
+def clean_price(val):
+    if pd.isna(val): return 0.0
+    s = str(val).replace(',', '').strip()
+    try: return float(s)
+    except: return 0.0
 
 @st.cache_data(ttl=60)
 def load_data():
     if not INVENTORY_FILE.exists(): return None, None, ["❌ 找不到庫存檔案"]
-    inv = pd.read_excel(INVENTORY_FILE)
-    inv.columns = inv.columns.str.strip()
-    inv['交易日期'] = inv['交易日期'].apply(parse_date)
+    try:
+        inv = pd.read_excel(INVENTORY_FILE)
+        inv.columns = inv.columns.str.strip()
+        inv['交易日期'] = inv['交易日期'].apply(parse_date)
+        inv = inv.dropna(subset=['交易日期'])
+    except: return None, None, ["⚠️ 讀取庫存失敗"]
     
-    csv_files = glob.glob(str(BASE_DIR / "*.csv"))
-    all_close = []
-    for f in csv_files:
+    all_close_data = []
+    for f in glob.glob(str(BASE_DIR / "*.csv")):
         try:
             df = pd.read_csv(f, encoding='cp950', on_bad_lines='skip')
-            # 自動偵測欄位
+            # 自動偵測日期/名稱/收盤價
+            date_col = next((c for c in df.columns if '日期' in c), None)
             name_col = next((c for c in df.columns if any(x in c for x in ['名稱','代號'])), None)
             price_col = next((c for c in df.columns if '收盤' in c), None)
-            date_col = next((c for c in df.columns if '日期' in c), None)
-            if name_col and price_col and date_col:
+            if date_col and name_col and price_col:
                 df = df.rename(columns={name_col: '股票名稱', price_col: '收盤價', date_col: '日期'})
                 df['日期_dt'] = df['日期'].apply(parse_date)
-                all_close.append(df[['股票名稱', '收盤價', '日期_dt']])
+                df['收盤價'] = df['收盤價'].apply(clean_price)
+                all_close_data.append(df[['股票名稱', '收盤價', '日期_dt']])
         except: continue
-    return inv, pd.concat(all_close, ignore_index=True) if all_close else None, []
+    return inv, pd.concat(all_close_data, ignore_index=True) if all_close_data else None, []
 
+@st.cache_data(ttl=60)
 def load_monitor_configs():
     if not MONITOR_FILE.exists(): return {}
     df = pd.read_excel(MONITOR_FILE)
     df['股票名稱'] = df['股票名稱'].astype(str).str.strip()
     return df.set_index('股票名稱').to_dict('index')
 
-# --- 載入與初始化 ---
+# --- 載入 ---
 inventory_df, close_df, logs = load_data()
 monitor_configs = load_monitor_configs()
 
-# --- UI 呈現 ---
-st.markdown("### 🔔 市場與持倉監控")
+# --- CSS ---
+st.markdown("""<style>
+    .report-table { width: 100%; border-collapse: collapse; margin-top: 20px; font-family: sans-serif; }
+    .report-table th { background-color: #f1f3f5; color: #1a365d; text-align: center !important; padding: 12px; border: 1px solid #dee2e6; }
+    .report-table td { padding: 10px; border: 1px solid #dee2e6; text-align: right; }
+    .kpi-box { padding: 20px; border-radius: 10px; background-color: #f8f9fa; border: 1px solid #dee2e6; text-align: center; }
+    .kpi-value { font-size: 1.8rem; font-weight: bold; color: #1a365d; }
+    .news-box { background-color: #fff9db; padding: 15px; border-left: 5px solid #fcc419; margin-bottom: 20px; }
+</style>""", unsafe_allow_html=True)
+
+# --- 主程式 ---
+st.markdown("### 🔔 持倉個股重大消息監控")
 if inventory_df is not None:
-    portfolio_stocks = inventory_df['股票名稱'].unique().tolist()
-    news = fetch_portfolio_news(getattr(config, 'GEMINI_API_KEY', None), portfolio_stocks)
+    news = fetch_portfolio_news(getattr(config, 'GEMINI_API_KEY', None), inventory_df['股票名稱'].unique().tolist())
     if news:
-        cols = st.columns(2)
+        c1, c2 = st.columns(2)
         for i, item in enumerate(news):
-            with cols[i % 2]: st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title')}</div><div class="news-content">{item.get('content')}</div></div>''', unsafe_allow_html=True)
+            with [c1, c2][i%2]: st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title')}</div><div class="news-content">{item.get('content')}</div></div>''', unsafe_allow_html=True)
 
 if inventory_df is not None and close_df is not None:
     all_dates = sorted(close_df['日期_dt'].dropna().unique())
     selected_date = st.select_slider("📅 選擇報告基準日：", options=all_dates, value=all_dates[-1])
     
-    # 進行計算
+    # 計算損益
     daily_details = []
     for d in all_dates:
         if d > selected_date: continue
@@ -149,7 +175,7 @@ if inventory_df is not None and close_df is not None:
     full_df = pd.DataFrame(daily_details)
     latest_summary = full_df[full_df['日期'] == selected_date]
 
-    # --- [新增功能] 資產與現金流儀表板 ---
+    # --- [新增] 儀表板 ---
     st.markdown("---")
     st.markdown("### 🛡️ 資產與現金流監控儀表板")
     c1, c2 = st.columns(2)
@@ -162,7 +188,7 @@ if inventory_df is not None and close_df is not None:
             st.metric("最大單一個股佔比", f"{conc:.1f}%", max_row['股票名稱'].iloc[0])
             st.progress(min(conc/30.0, 1.0))
     with c2:
-        st.markdown("#### 💰 被動收入達標監測")
+        st.markdown("#### 💰 被動收入監測")
         est_div = 0
         for name, group in inventory_df.groupby('股票名稱'):
             if name in monitor_configs and '預估每股配息' in monitor_configs[name]:
@@ -172,13 +198,16 @@ if inventory_df is not None and close_df is not None:
         st.progress(min(est_div/target, 1.0))
     st.divider()
 
-    # --- 原有分析與圖表 ---
+    # --- [原有] KPI 與圖表 ---
+    st.markdown("### 🔑 關鍵績效指標")
+    # (此處接續您原本的績效計算、圖表與 HTML 明細顯示區塊)
+    # 為了確保完整，保留您原本的圖表渲染區塊：
     cols = st.columns(3)
     cols[0].plotly_chart(px.area(full_df, x="日期", y="淨損益", color="股票名稱"), use_container_width=True)
     cols[1].plotly_chart(px.pie(latest_summary, values='市值', names='股票名稱'), use_container_width=True)
     cols[2].plotly_chart(px.bar(latest_summary, x='股票名稱', y='淨損益'), use_container_width=True)
-
-    # --- 投資組合明細 ---
+    
+    # 投資組合明細清單
     st.subheader("📋 投資組合明細清單")
     prev_date = all_dates[all_dates.index(selected_date) - 1] if all_dates.index(selected_date) > 0 else selected_date
     prev_data = full_df[full_df['日期'] == prev_date]
@@ -189,4 +218,6 @@ if inventory_df is not None and close_df is not None:
         rows_html += f"<tr><td>{name}</td><td>{row['市值'].iloc[0]:,.0f}</td><td>{format_finance_plain(row['淨損益'].iloc[0])}</td><td>{format_finance_plain(row['淨損益'].iloc[0] - prev_pnl)}</td></tr>"
     st.markdown(f"<table class='report-table'><thead><tr><th>名稱</th><th>市值</th><th>累計損益</th><th>本日獲利(損)</th></tr></thead><tbody>{rows_html}</tbody></table>", unsafe_allow_html=True)
 else:
-    st.info("👋 歡迎使用！請確認資料夾中已包含 '庫存股票.xlsx' 與 CSV 檔案。")
+    st.info("👋 歡迎使用！請確認 '每日收盤' 資料夾中已包含 '庫存股票.xlsx' 與當日收盤價 CSV 檔案。")
+    if logs:
+        for log in logs: st.error(log)

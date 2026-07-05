@@ -240,6 +240,15 @@ def clean_price(val):
 
 @st.cache_data(ttl=60)
 def load_data():
+    @st.cache_data(ttl=60)
+def load_monitor_configs():
+    if not MONITOR_FILE.exists(): return None
+    df = pd.read_excel(MONITOR_FILE)
+    # 將代號轉為字串並建立對應字典
+    df['代號'] = df['代號'].astype(str).str.zfill(4)
+    return df.set_index('代號').to_dict('index')
+
+monitor_configs = load_monitor_configs()
     if not INVENTORY_FILE.exists(): return None, None, ["❌ 找不到庫存檔案"]
     try:
         inventory_df = pd.read_excel(INVENTORY_FILE, sheet_name=0)
@@ -302,6 +311,47 @@ inventory_df, close_df, logs = load_data()
 #st.title("📊 投資組合財務分析報告 v3.9.1")
 
 # --- 盤前重大消息區塊 (動態即時連線版) ---
+st.markdown("### 🛡️ 資產與現金流監控儀表板")
+col_risk, col_div = st.columns(2)
+
+with col_risk:
+    st.markdown("#### 🚩 資產集中度與風險")
+    if inventory_df is not None and not latest_summary.empty:
+        # 計算集中度
+        total_val = latest_summary['市值'].sum()
+        max_stock = latest_summary.nlargest(1, '市值')
+        max_name = max_stock['股票名稱'].values[0]
+        concentration = (max_stock['市值'].values[0] / total_val) * 100
+        
+        # 風險評級
+        risk_color = "red" if concentration > 30 else ("orange" if concentration > 20 else "green")
+        st.metric("最大單一個股佔比", f"{concentration:.1f}%", f"風險評級: {max_name}", delta_color="inverse" if concentration > 30 else "normal")
+        st.progress(min(concentration/40, 1.0))
+        st.caption(f"註：若單一個股佔比 > 30% 視為高風險集中狀態。")
+    else:
+        st.info("⚠️ 無庫存資料可供分析。")
+
+with col_div:
+    st.markdown("#### 💰 被動收入達標監測 (年化)")
+    if inventory_df is not None and monitor_configs:
+        # 目標設定
+        TARGET_2026 = 280000 * 4 # 112萬
+        
+        # 計算庫存持有之 ETF 預估年化配息
+        total_annual_div = 0
+        for _, row in inventory_df.groupby('股票名稱').agg({'股數': 'sum'}).iterrows():
+            name = row.name
+            # 從 monitor_configs 根據名稱反查 (需注意這裡名稱對應需精準)
+            # 簡化版：假設 monitor_configs 內有名稱鍵值，若無則跳過
+            # 實際運作需確保 Excel 名稱一致
+            for _, config_val in monitor_configs.items():
+                # 這裡需要一個更穩定的對應方式，建議在監控檔統一名稱
+                pass 
+        
+        # 顯示進度條 (模擬)
+        st.metric("2026 預估年配息", "即將串接", help="請確保庫存股票名稱與監控股票名稱一致")
+        st.progress(0.65) # 範例進度
+        st.caption("目標：2026 年年化配息 112 萬元")
 st.markdown("### 🔔 今日盤前重大消息 (Gemini AI 即時分析)")
 api_key = os.getenv("GEMINI_API_KEY") or getattr(config, 'GEMINI_API_KEY', None)
 with st.spinner("🔄 正在取得並分析最新市場新聞..."):

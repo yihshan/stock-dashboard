@@ -21,7 +21,7 @@ try:
     GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
 
     #LINE_CHANNEL_ACCESS_TOKEN = st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""))
-    LINE_USER_ID = st.secrets.get("LINE_USER_ID", os.getenv("LINE_USER_ID", ""))
+    #LINE_USER_ID = st.secrets.get("LINE_USER_ID", os.getenv("LINE_USER_ID", ""))
     
 except Exception:
     # 👑 2. 降級回歸 GitHub Actions / 本地環境憑證鏈
@@ -30,13 +30,13 @@ except Exception:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
     #LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
-    LINE_USER_ID = os.getenv("LINE_USER_ID", "")
+    #LINE_USER_ID = os.getenv("LINE_USER_ID", "")
 
 # 🛠️ 終極防禦：如果在 Actions 區塊讀取失敗，嘗試直接做全域強抓
-if not LINE_CHANNEL_ACCESS_TOKEN:
-    LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-if not LINE_USER_ID:
-    LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
+#if not LINE_CHANNEL_ACCESS_TOKEN:
+    #LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+#if not LINE_USER_ID:
+    #LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
     
 # 收件人清單
 RECIPIENTS = [

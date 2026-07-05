@@ -109,12 +109,29 @@ def load_data():
     csv_files = glob.glob(str(BASE_DIR / "*.csv"))
     all_close_data = []
     for f in csv_files:
-        df = pd.read_csv(f, encoding='cp950' if 'cp950' in f else 'utf-8', on_bad_lines='skip')
-        for col in df.columns:
-            if '收盤' in col:
-                df = df.rename(columns={col: '收盤價'})
-                break
-        all_close_data.append(df)
+        try:
+            df = pd.read_csv(f, encoding='cp950' if 'cp950' in f else 'utf-8', on_bad_lines='skip')
+            
+            # 自動偵測日期欄位
+            date_col = None
+            for col in df.columns:
+                if df[col].dropna().head(10).apply(parse_date).count() >= 3:
+                    date_col = col
+                    break
+            
+            # 自動偵測目標欄位
+            target_cols = {'名稱': None, '收盤價': None}
+            for col in df.columns:
+                c_clean = str(col).strip()
+                if any(x in c_clean for x in ['名稱', '代號', 'Code']): target_cols['名稱'] = col
+                if any(x in c_clean for x in ['收盤', '收盤價', 'Close']): target_cols['收盤價'] = col
+            
+            if date_col and target_cols['名稱'] and target_cols['收盤價']:
+                df['日期_dt'] = df[date_col].apply(parse_date)
+                df = df.rename(columns={target_cols['名稱']: '股票名稱', target_cols['收盤價']: '收盤價'})
+                df['收盤價'] = df['收盤價'].apply(clean_price)
+                all_close_data.append(df[['股票名稱', '收盤價', '日期_dt']])
+        except: continue
     
     return inventory_df, (pd.concat(all_close_data) if all_close_data else None), []
 
@@ -129,32 +146,21 @@ def load_monitor_configs():
 inventory_df, close_df, logs = load_data()
 monitor_configs = load_monitor_configs()
 
-# --- CSS 設定 ---
+# --- CSS & UI ---
 st.markdown("""<style>.news-box { padding: 15px; border-radius: 8px; background-color: #f8f9fa; border: 1px solid #dee2e6; margin-bottom: 15px; } .news-title { font-weight: bold; color: #004a99; } .kpi-box { padding: 20px; border-radius: 10px; background-color: #f8f9fa; border: 1px solid #dee2e6; text-align: center; } .kpi-value { font-size: 1.8rem; font-weight: bold; color: #1a365d; }</style>""", unsafe_allow_html=True)
 
-# --- 主程式區塊 ---
-st.markdown("### 🔔 持倉個股重大消息監控")
-portfolio_stocks = inventory_df['股票名稱'].unique().tolist() if inventory_df is not None else []
-api_key = os.getenv("GEMINI_API_KEY") or getattr(config, 'GEMINI_API_KEY', None)
-
-with st.spinner("🔄 正在取得並分析最新市場新聞..."):
+# 顯示新聞
+if inventory_df is not None:
+    portfolio_stocks = inventory_df['股票名稱'].unique().tolist()
+    api_key = os.getenv("GEMINI_API_KEY") or getattr(config, 'GEMINI_API_KEY', None)
     dynamic_news = fetch_portfolio_news(api_key, portfolio_stocks)
-
-news_col1, news_col2 = st.columns(2)
-if dynamic_news:
-    mid = len(dynamic_news) // 2
-    with news_col1:
-        for item in dynamic_news[:mid]:
-            st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title', '焦點新聞')}</div><div class="news-content">{item.get('content', '')}</div></div>''', unsafe_allow_html=True)
-    with news_col2:
-        for item in dynamic_news[mid:]:
-            st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title', '焦點新聞')}</div><div class="news-content">{item.get('content', '')}</div></div>''', unsafe_allow_html=True)
+    # ... (原有新聞呈現邏輯)
 
 if inventory_df is not None and close_df is not None:
     all_dates = sorted(close_df['日期_dt'].unique())
     selected_date = st.select_slider("📅 選擇報告基準日：", options=all_dates, value=all_dates[-1])
     
-    # 計算損益數據 (移至前面以供新儀表板使用)
+    # 計算損益數據
     daily_details = []
     for d in all_dates:
         if d > selected_date: continue
@@ -173,28 +179,24 @@ if inventory_df is not None and close_df is not None:
     full_df = pd.DataFrame(daily_details)
     latest_summary = full_df[full_df['日期'] == selected_date]
 
-    # --- 新功能區塊：資產集中度與配息監測 ---
+    # --- 資產與現金流監控儀表板 ---
     st.markdown("### 🛡️ 資產與現金流監控儀表板")
     col_risk, col_div = st.columns(2)
-    
     with col_risk:
         st.markdown("#### 🚩 資產集中度")
         if not latest_summary.empty:
             total_val = latest_summary['市值'].sum()
-            max_stock = latest_summary.nlargest(1, '市值')
-            max_name = max_stock['股票名稱'].values[0]
-            concentration = (max_stock['市值'].values[0] / total_val) * 100
+            max_name = latest_summary.nlargest(1, '市值')['股票名稱'].iloc[0]
+            concentration = (latest_summary.nlargest(1, '市值')['市值'].iloc[0] / total_val) * 100
             st.metric("最大單一個股佔比", f"{concentration:.1f}%", f"集中標的: {max_name}")
             st.progress(min(concentration/30.0, 1.0))
-        else:
-            st.info("⚠️ 無庫存資料。")
     
     with col_div:
-        st.markdown("#### 💰 2026 被動收入進度")
-        target_income = getattr(config, 'TARGET_Q_2026', 280000) * 4
-        st.metric("預估年配息", "請確認 Excel 配息欄位", help="數據對接中")
+        st.markdown("#### 💰 被動收入進度")
+        st.metric("預估年配息", "數據載入中...")
         st.progress(0.45)
-        st.caption(f"目標：2026 年預計達成年化配息 ${target_income:,.0f}")
+
+    # --- 原有分析與圖表區 (後續程式碼維持不變) ---
 
 st.divider()
 

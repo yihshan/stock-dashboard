@@ -241,7 +241,7 @@ def clean_price(val):
 @st.cache_data(ttl=60)
 def load_data():
     @st.cache_data(ttl=60)
-def load_monitor_configs():
+    def load_monitor_configs():
     if not MONITOR_FILE.exists(): return None
     df = pd.read_excel(MONITOR_FILE)
     # 將代號轉為字串並建立對應字典

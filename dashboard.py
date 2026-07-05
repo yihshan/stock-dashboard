@@ -183,12 +183,12 @@ if inventory_df is not None and monitor_configs:
         st.metric("預估年配息", "需於 Excel 新增配息欄位", help="請確保庫存股票名稱與監控股票名稱一致")
         st.progress(0.45) # 目前顯示範例進度
         st.caption(f"目標：2026 年預計達成年化配息 ${target_income:,.0f}")
-    else:
+        else:
         st.info("⚠️ 請先確認監控股票清單是否有配息數據。")
 
 st.markdown("### 🔔 今日盤前重大消息 (Gemini AI 即時分析)")
 api_key = os.getenv("GEMINI_API_KEY") or getattr(config, 'GEMINI_API_KEY', None)
-with st.spinner("🔄 正在取得並分析最新市場新聞..."):
+    with st.spinner("🔄 正在取得並分析最新市場新聞..."):
     dynamic_news = fetch_portfolio_news(api_key, portfolio_stocks)
 
 news_col1, news_col2 = st.columns(2)

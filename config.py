@@ -12,6 +12,13 @@ DATA_DIR = BASE_DIR / "data"
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 
+# --- 資產集中度風險監控閾值 (您可隨時微調) ---
+RISK_CONCENTRATION_WARNING = 20.0  # 超過此值變黃燈
+RISK_CONCENTRATION_DANGER = 30.0   # 超過此值變紅燈
+
+# --- 退休現金流目標 (每季) ---
+TARGET_Q_2026 = 280000
+
 # 從環境變數讀取機密資訊
 try:
     # 👑 1. 嘗試 Streamlit 雲端憑證鏈

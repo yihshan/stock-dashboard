@@ -86,9 +86,6 @@ if inventory_df is not None and '股票名稱' in inventory_df.columns:
 else:
     st.warning("⚠️ 無法讀取庫存或 Excel 中缺少「股票名稱」欄位。")
 
-# --- 其餘程式邏輯請接續在此 ---
-# --- 後續您原有的圖表與明細表邏輯請接續在此 ---
-# (以下接您原本繪製圖表與明細表的程式碼...)
 # 設定頁面與專業風格
 st.set_page_config(page_title="台股投資分析報告 v3.9.1", layout="wide")
 
@@ -302,6 +299,69 @@ inventory_df, close_df, logs = load_data()
 #st.title("📊 投資組合財務分析報告 v3.9.1")
 
 # --- 盤前重大消息區塊 (動態即時連線版) ---
+
+# 1. 載入監控配置 (從 Excel 讀取配息與資產類別)
+@st.cache_data(ttl=60)
+def load_monitor_configs():
+    if not MONITOR_FILE.exists(): return {}
+    df = pd.read_excel(MONITOR_FILE)
+    # 建立以「股票名稱」為 key 的字典，方便後續對應庫存資料
+    df['股票名稱'] = df['股票名稱'].astype(str).str.strip()
+    return df.set_index('股票名稱').to_dict('index')
+
+monitor_configs = load_monitor_configs()
+
+st.markdown("### 🛡️ 資產與現金流監控儀表板")
+col_risk, col_div = st.columns(2)
+
+# --- 功能 A：資產集中度紅綠燈 ---
+with col_risk:
+    st.markdown("#### 🚩 資產集中度與風險")
+    if inventory_df is not None and not latest_summary.empty:
+        total_val = latest_summary['市值'].sum()
+        max_stock = latest_summary.nlargest(1, '市值')
+        max_name = max_stock['股票名稱'].values[0]
+        concentration = (max_stock['市值'].values[0] / total_val) * 100
+        
+        warning_th = getattr(config, 'RISK_CONCENTRATION_WARNING', 20.0)
+        danger_th = getattr(config, 'RISK_CONCENTRATION_DANGER', 30.0)
+        
+        # 動態色彩邏輯
+        risk_color = "red" if concentration > danger_th else ("orange" if concentration > warning_th else "green")
+        
+        st.metric("最大單一個股佔比", f"{concentration:.1f}%", f"集中標的: {max_name}", 
+                  delta_color="inverse" if concentration > warning_th else "normal")
+        
+        # 繪製進度條
+        st.progress(min(concentration/danger_th, 1.0))
+        st.caption(f"註：若單一個股佔比 > {danger_th}% 視為高風險集中狀態。")
+    else:
+        st.info("⚠️ 無庫存資料可供風險分析。")
+
+# --- 功能 B：退休被動收入監測 ---
+with col_div:
+    st.markdown("#### 💰 2026 被動收入進度 (年化)")
+    if inventory_df is not None and monitor_configs:
+        # 計算庫存持有部位的年化預估配息
+        total_annual_div = 0
+        target_income = getattr(config, 'TARGET_Q_2026', 280000) * 4
+        
+        for name, group in inventory_df.groupby('股票名稱'):
+            cfg = monitor_configs.get(name)
+            if cfg and '目標配息率(%)' in cfg:
+                # 這裡使用庫存股數 * 假設配息 (邏輯為簡化版，您可依需求進階微調)
+                # 假設這裡使用 Excel 中的目標配息率與股價進行反推或設定
+                shares = group['股數'].sum()
+                # 若監控表中有每股配息欄位則更好，目前暫用 Excel 的配息率邏輯
+                # 這裡僅顯示邏輯骨幹，請確認您的 Excel 是否有「每股配息」欄位
+                pass
+        
+        st.metric("預估年配息", "需於 Excel 新增配息欄位", help="請確保庫存股票名稱與監控股票名稱一致")
+        st.progress(0.45) # 目前顯示範例進度
+        st.caption(f"目標：2026 年預計達成年化配息 ${target_income:,.0f}")
+    else:
+        st.info("⚠️ 請先確認監控股票清單是否有配息數據。")
+
 st.markdown("### 🔔 今日盤前重大消息 (Gemini AI 即時分析)")
 api_key = os.getenv("GEMINI_API_KEY") or getattr(config, 'GEMINI_API_KEY', None)
 with st.spinner("🔄 正在取得並分析最新市場新聞..."):
@@ -441,22 +501,28 @@ if inventory_df is not None and close_df is not None:
     valid_inventory = inventory_df[inventory_df['交易日期'] <= selected_date]
     inventory_to_show = valid_inventory if selected_stock == "全部個股" else valid_inventory[valid_inventory['股票名稱'] == selected_stock]    
     
-    # 準備用於計算個股本日獲利(損)的數據
+    # 準備用於計算個股本日獲利(損)的數據 (修正為單純的日期差異計算)
     stock_daily_pnl_map = {}
     if len(all_dates) >= 2:
         try:
-            idx = all_dates.index(selected_date)
-            if idx > 0:
-                prev_date = all_dates[idx-1]
-                prev_details = filtered_full_df[filtered_full_df['日期'] == prev_date]
-                for _, row in latest_summary.iterrows():
-                    name = row['股票名稱']
-                    prev_row = prev_details[prev_details['股票名稱'] == name]
-                    if not prev_row.empty:
-                        stock_daily_pnl_map[name] = row['淨損益'] - prev_row.iloc[0]['淨損益']
-                    else:
-                        stock_daily_pnl_map[name] = row['淨損益']
-        except: pass
+            # 取得當前日期的索引
+            current_idx = all_dates.index(selected_date)
+            if current_idx > 0:
+                prev_date = all_dates[current_idx - 1]
+                
+                # 過濾出當日與前一日的完整數據
+                curr_data = full_df[full_df['日期'] == selected_date]
+                prev_data = full_df[full_df['日期'] == prev_date]
+                
+                # 遍歷當日所有持股進行相減
+                for name in curr_data['股票名稱'].unique():
+                    curr_pnl = curr_data[curr_data['股票名稱'] == name]['淨損益'].sum()
+                    # 若前一日無該股，則視為 0
+                    prev_pnl = prev_data[prev_data['股票名稱'] == name]['淨損益'].sum() if name in prev_data['股票名稱'].values else 0
+                    
+                    stock_daily_pnl_map[name] = curr_pnl - prev_pnl
+        except Exception as e:
+            logger.error(f"計算本日獲利差異時發生錯誤: {e}")
 
     rows_html = ""
     for name, group in inventory_to_show.groupby('股票名稱'):

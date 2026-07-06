@@ -87,6 +87,11 @@ st.markdown("""
         text-align: center; /* 股票名稱置中 */
     }
     
+    /* ✅ 關鍵修改：設定表格第二欄（基本面雷達）數據置中對齊 */
+    .report-table td:nth-child(2) {
+        text-align: center !important;
+    }
+    
     /* 負數紅字樣式 */
     .neg-value { color: #dc3545; font-weight: bold; }
     
@@ -441,9 +446,7 @@ if inventory_df is not None and close_df is not None:
             fig_bar.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, coloraxis_showscale=False)
             st.plotly_chart(fig_bar, use_container_width=True)
 
-    # =========================================================================
-    # 📈 [全新功能] 大盤對標走勢圖區塊 (以 0050 元大台灣50 作為大盤基準線)
-    # =========================================================================
+    # --- 大盤對標走勢圖區塊 (以 0050 元大台灣50 作為大盤基準線) ---
     st.markdown("### 📊 投資績效 vs 大盤對標 (累積報酬率 %)")
     df_0050 = close_df[close_df['股票名稱'] == '元大台灣50'].sort_values('日期_dt')
     
@@ -455,10 +458,8 @@ if inventory_df is not None and close_df is not None:
         for d, group in filtered_full_df.groupby('日期'):
             total_cost_d = group['成本'].sum()
             total_pnl_d = group['淨損益'].sum()
-            # 算出個股或投組當日的累積報酬率
             port_roi = (total_pnl_d / total_cost_d * 100) if total_cost_d > 0 else 0
             
-            # 算出大盤當日的累積報酬率
             price_0050_d = dict_0050.get(d, p_start)
             mkt_roi = ((price_0050_d - p_start) / p_start * 100) if p_start > 0 else 0
             
@@ -472,9 +473,7 @@ if inventory_df is not None and close_df is not None:
         if benchmark_data:
             bench_df = pd.DataFrame(benchmark_data)
             fig_bench = go.Figure()
-            # 投資人曲線
             fig_bench.add_trace(go.Scatter(x=bench_df['日期'], y=bench_df[list(bench_df.columns)[1]], name=list(bench_df.columns)[1], line=dict(color='#1a365d', width=3)))
-            # 大盤基準虛線
             fig_bench.add_trace(go.Scatter(x=bench_df['日期'], y=bench_df['大盤 (元大台灣50) (%)'], name='大盤 (元大台灣50) (%)', line=dict(color='#dc3545', width=2, dash='dash')))
             fig_bench.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=300, template="plotly_white", xaxis_title="日期", yaxis_title="累積報酬率 (%)")
             st.plotly_chart(fig_bench, use_container_width=True)

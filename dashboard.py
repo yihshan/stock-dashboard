@@ -455,7 +455,7 @@ if inventory_df is not None and close_df is not None:
             # =========================================================================
             # 🎯 [新增長線基本面雷達核心邏輯]
             # =========================================================================
-            status_html = '<span class="status-hold">HODL 持有</span>'
+            status_html = '<span class="status-hold">HOLD 持有</span>'
             cfg = monitor_configs.get(name)
             if cfg:
                 target_price = cfg.get('固定買進目標價', 0)

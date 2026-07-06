@@ -87,7 +87,7 @@ st.markdown("""
         text-align: center; /* 股票名稱置中 */
     }
     
-    /* ✅ 關鍵修改：設定表格第二欄（基本面雷達）數據置中對齊 */
+    /* 設定表格第二欄（基本面雷達）數據置中對齊 */
     .report-table td:nth-child(2) {
         text-align: center !important;
     }
@@ -122,6 +122,8 @@ st.markdown("""
     .status-buy { background-color: #d3f9d8; color: #2b8a3e; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 0.9rem; }
     .status-overheat { background-color: #fff0f6; color: #c92a2a; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 0.9rem; }
     .status-hold { background-color: #e3fafc; color: #0c8599; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 0.9rem; }
+    .status-rotate { background-color: #fff4e6; color: #d9480f; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 0.9rem; }
+    .status-danger { background-color: #fff5f5; color: #e03131; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 0.9rem; animation: blink 2s infinite; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -500,19 +502,31 @@ if inventory_df is not None and close_df is not None:
             roi_stock = (pnl / (avg_cost * shares) * 100) if avg_cost > 0 else 0
             daily_pnl_stock = stock_daily_pnl_map.get(name, 0)
             
-            # 基本面雷達判定邏輯
-            status_html = '<span class="status-hold">💎 HODL 持有</span>'
+            # =========================================================================
+            # 🎯 [更新功能] 五大基本面雷達判定邏輯 (含減碼轉進、體質變質、置中對齊)
+            # =========================================================================
+            status_html = '<span class="status-hold">💎 HOLD 持有</span>'
             cfg = monitor_configs.get(name)
             if cfg:
+                # 1. 優先檢查手動體質判定
+                condition = str(cfg.get('體質狀況', '正常')).strip()
+                
                 target_price = cfg.get('固定買進目標價', 0)
                 req_yield = cfg.get('要求殖利率(%)', 0)
                 est_per_div = cfg.get('預估每股配息', 0)
-                
                 current_yield = (est_per_div / price * 100) if price > 0 else 0
-                if (target_price > 0 and price <= target_price) or (req_yield > 0 and current_yield >= req_yield):
-                    status_html = '<span class="status-buy">🎯 達買進點</span>'
+                
+                if condition == '變質':
+                    status_html = '<span class="status-danger">🚨 體質變質賣出</span>'
+                # 2. 檢查極度泡沫（減碼轉進區）：殖利率低於要求的 30%
+                elif req_yield > 0 and current_yield < (req_yield * 0.3):
+                    status_html = '<span class="status-rotate">🔄 建議減碼轉進</span>'
+                # 3. 檢查一般過熱區：殖利率低於要求的 60%
                 elif req_yield > 0 and current_yield < (req_yield * 0.6):
                     status_html = '<span class="status-overheat">⚠️ 估值過熱</span>'
+                # 4. 檢查達買進便宜點
+                elif (target_price > 0 and price <= target_price) or (req_yield > 0 and current_yield >= req_yield):
+                    status_html = '<span class="status-buy">🎯 達買進點</span>'
             
             rows_html += f"""<tr>
 <td>{name}</td>

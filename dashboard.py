@@ -23,7 +23,7 @@ except ImportError:
     st.error("❌ 找不到 config.py，請確保設定檔存在。")
     st.stop()
 
-# 設定頁面 (統一保留在最上方，避免 Streamlit 重複設定報錯)
+# 設定頁面
 st.set_page_config(page_title="台股投資分析報告 v3.9.1", layout="wide")
 
 # --- 1. 動態個股新聞分析模組 (名稱固定為 fetch_portfolio_news) ---
@@ -58,7 +58,7 @@ def fetch_portfolio_news(api_key, stock_names):
 INVENTORY_FILE = Path(config.DATA_DIR) / "庫存股票.xlsx"
 inventory_df = pd.read_excel(INVENTORY_FILE) if os.path.exists(INVENTORY_FILE) else None
 
-# --- 3. UI 樣式設定 ---
+# --- 3. UI 設定 ---
 st.markdown("""
     <style>
     h1, h2, h3 { color: #1a365d; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
@@ -74,17 +74,17 @@ st.markdown("""
         background-color: #f1f3f5;
         color: #1a365d;
         font-weight: bold;
-        text-align: center !important;
+        text-align: center !important; /* 欄位名稱置中 */
         padding: 12px;
         border: 1px solid #dee2e6;
     }
     .report-table td {
         padding: 10px;
         border: 1px solid #dee2e6;
-        text-align: right;
+        text-align: right; /* 預設數據靠右 */
     }
     .report-table td:first-child {
-        text-align: center;
+        text-align: center; /* 股票名稱置中 */
     }
     
     /* 負數紅字樣式 */
@@ -113,39 +113,55 @@ st.markdown("""
     .news-title { font-weight: bold; color: #856404; margin-bottom: 5px; }
     .news-content { font-size: 0.95rem; color: #555; }
 
-    /* 價值雷達標籤 */
-    .status-buy { background-color: #d3f9d8; color: #2b8a3e; padding: 3px 8px; border-radius: 5px; font-weight: bold; }
-    .status-overheat { background-color: #fff0f6; color: #c92a2a; padding: 3px 8px; border-radius: 5px; font-weight: bold; }
-    .status-hold { background-color: #e3fafc; color: #0c8599; padding: 3px 8px; border-radius: 5px; font-weight: bold; }
+    /* 長線基本面雷達標籤樣式 */
+    .status-buy { background-color: #d3f9d8; color: #2b8a3e; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 0.9rem; }
+    .status-overheat { background-color: #fff0f6; color: #c92a2a; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 0.9rem; }
+    .status-hold { background-color: #e3fafc; color: #0c8599; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 0.9rem; }
     </style>
     """, unsafe_allow_html=True)
 
-# 定義資料路徑
+# 定義資料路徑：從 config.py 讀取統一路徑
 BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
 
+# 財務參數
 FEE_RATE = 0.001425
 TAX_RATE = 0.003
 MIN_FEE = 20
 
 def format_finance(val, is_percent=False):
+    """專業財務格式：負數用括號紅字，不含負號"""
     if val is None: return ""
     suffix = "%" if is_percent else ""
     abs_val = abs(val)
-    val_str = f"{abs_val:,.2f}{suffix}" if is_percent else f"{abs_val:,.0f}{suffix}"
-    return f'<span class="neg-value">({val_str})</span>' if val < 0 else val_str
+    
+    if is_percent:
+        val_str = f"{abs_val:,.2f}{suffix}"
+    else:
+        val_str = f"{abs_val:,.0f}{suffix}"
+        
+    if val < 0:
+        return f'<span class="neg-value">({val_str})</span>'
+    else:
+        return val_str
 
 def format_finance_plain(val, is_percent=False):
+    """將數值格式化：負數以紅色括號顯示，正數正常顯示"""
     try:
         val = float(val)
         if is_percent:
             formatted = f"{val:.2f}%"
         else:
             formatted = f"{val:,.0f}"
+            
         if val < 0:
             abs_val = abs(val)
-            return f'<span style="color:red">({abs_val:.2f}%)</span>' if is_percent else f'<span style="color:red">({abs_val:,.0f})</span>'
+            if is_percent:
+                return f'<span style="color:red">({abs_val:.2f}%)</span>'
+            else:
+                return f'<span style="color:red">({abs_val:,.0f})</span>'
+        
         return formatted
     except:
         return str(val)
@@ -165,6 +181,7 @@ def parse_date(val):
         return val.date() if isinstance(val, datetime) else val
     s = str(val).strip().split(' ')[0]
     if not s: return None
+    
     for sep in ['/', '-']:
         parts = s.split(sep)
         if len(parts) == 3:
@@ -172,6 +189,7 @@ def parse_date(val):
                 y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
                 return date(y if y > 1911 else y + 1911, m, d)
             except: continue
+            
     digits = re.sub(r'\D', '', s)
     if len(digits) == 8:
         try: return datetime.strptime(digits, '%Y%m%d').date()
@@ -240,11 +258,8 @@ def load_data():
                 temp_df['收盤價'] = temp_df['收盤價'].apply(clean_price)
                 all_close_data.append(temp_df)
         except: pass
-        
-    # ✅ 關鍵修復：加入 ignore_index=True 徹底排除 InvalidIndexError 衝突
     return inventory_df, (pd.concat(all_close_data, ignore_index=True) if all_close_data else None), []
 
-@st.cache_data(ttl=60)
 def load_monitor_configs():
     if not MONITOR_FILE.exists(): return {}
     df = pd.read_excel(MONITOR_FILE)
@@ -291,7 +306,7 @@ st.divider()
 if inventory_df is not None and close_df is not None:
     all_dates = sorted(close_df['日期_dt'].unique())
     
-    # 控制列
+    # 頂部控制列
     ctrl1, ctrl2 = st.columns([7, 3])
     with ctrl1:
         selected_date = st.select_slider("📅 選擇報告基準日：", options=all_dates, value=all_dates[-1])
@@ -299,7 +314,7 @@ if inventory_df is not None and close_df is not None:
         all_stock_names = ["全部個股"] + sorted(inventory_df['股票名稱'].unique().tolist())
         selected_stock = st.selectbox("🔍 個股連動分析：", options=all_stock_names)
 
-    # 計算累積歷史損益數據
+    # 計算損益數據
     daily_details = []
     for d in all_dates:
         if d > selected_date: continue
@@ -319,9 +334,7 @@ if inventory_df is not None and close_df is not None:
     filtered_full_df = full_df if selected_stock == "全部個股" else full_df[full_df['股票名稱'] == selected_stock]
     latest_summary = filtered_full_df[filtered_full_df['日期'] == selected_date]
     
-    # =========================================================================
-    # ✅ [更新功能] 本日獲利(損) 採用直覺演算法：(今日收盤價 - 昨日收盤價) * 持有股數
-    # =========================================================================
+    # 計算「本日獲利(損)」- 直覺價差算法
     daily_pnl = 0
     stock_daily_pnl_map = {}
     if len(all_dates) >= 2:
@@ -339,13 +352,10 @@ if inventory_df is not None and close_df is not None:
                 for name, group in inv_to_calc.groupby('股票名稱'):
                     shares = group['股數'].sum()
                     if shares <= 0: continue
-                    
                     m_curr = d_curr[d_curr['股票名稱'] == name]
                     curr_price = m_curr.iloc[0]['收盤價'] if not m_curr.empty else 0
-                    
                     m_prev = d_prev[d_prev['股票名稱'] == name]
                     prev_price = m_prev.iloc[0]['收盤價'] if not m_prev.empty else curr_price
-                    
                     if curr_price > 0:
                         diff_amount = (curr_price - prev_price) * shares
                         stock_daily_pnl_map[name] = diff_amount
@@ -357,7 +367,7 @@ if inventory_df is not None and close_df is not None:
     total_cost = latest_summary['成本'].sum() if not latest_summary.empty else 0
     roi = (total_net_pnl / total_cost * 100) if total_cost > 0 else 0
 
-    # --- 新增：頂部資產與現金流長線監控儀表板 ---
+    # --- 頂部資產與長線現金流監控儀表板 ---
     st.markdown("### 🛡️ 資產與長線現金流監控")
     col_risk, col_div = st.columns(2)
     
@@ -375,7 +385,6 @@ if inventory_df is not None and close_df is not None:
     with col_div:
         st.markdown("#### 💰 2026 被動收入進度 (年化目標)")
         total_annual_div = 0
-        # ✅ 正確對接您監控檔案中的「預估每股配息」欄位與實際股數進行計算
         for name, group in inventory_df.groupby('股票名稱'):
             shares = group['股數'].sum()
             cfg = monitor_configs.get(name)
@@ -409,7 +418,7 @@ if inventory_df is not None and close_df is not None:
 
     st.divider()
 
-    # 圖表區
+    # 原有圖表區
     c1, c2, c3 = st.columns([5, 2.5, 2.5])
     with c1:
         st.subheader("📈 損益結構趨勢")
@@ -432,6 +441,46 @@ if inventory_df is not None and close_df is not None:
             fig_bar.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, coloraxis_showscale=False)
             st.plotly_chart(fig_bar, use_container_width=True)
 
+    # =========================================================================
+    # 📈 [全新功能] 大盤對標走勢圖區塊 (以 0050 元大台灣50 作為大盤基準線)
+    # =========================================================================
+    st.markdown("### 📊 投資績效 vs 大盤對標 (累積報酬率 %)")
+    df_0050 = close_df[close_df['股票名稱'] == '元大台灣50'].sort_values('日期_dt')
+    
+    if not df_0050.empty and not filtered_full_df.empty:
+        p_start = df_0050.iloc[0]['收盤價']
+        dict_0050 = df_0050.set_index('日期_dt')['收盤價'].to_dict()
+        
+        benchmark_data = []
+        for d, group in filtered_full_df.groupby('日期'):
+            total_cost_d = group['成本'].sum()
+            total_pnl_d = group['淨損益'].sum()
+            # 算出個股或投組當日的累積報酬率
+            port_roi = (total_pnl_d / total_cost_d * 100) if total_cost_d > 0 else 0
+            
+            # 算出大盤當日的累積報酬率
+            price_0050_d = dict_0050.get(d, p_start)
+            mkt_roi = ((price_0050_d - p_start) / p_start * 100) if p_start > 0 else 0
+            
+            label_name = "我的投資組合 (%)" if selected_stock == "全部個股" else f"{selected_stock} (%)"
+            benchmark_data.append({
+                "日期": d,
+                label_name: round(port_roi, 2),
+                "大盤 (元大台灣50) (%)": round(mkt_roi, 2)
+            })
+            
+        if benchmark_data:
+            bench_df = pd.DataFrame(benchmark_data)
+            fig_bench = go.Figure()
+            # 投資人曲線
+            fig_bench.add_trace(go.Scatter(x=bench_df['日期'], y=bench_df[list(bench_df.columns)[1]], name=list(bench_df.columns)[1], line=dict(color='#1a365d', width=3)))
+            # 大盤基準虛線
+            fig_bench.add_trace(go.Scatter(x=bench_df['日期'], y=bench_df['大盤 (元大台灣50) (%)'], name='大盤 (元大台灣50) (%)', line=dict(color='#dc3545', width=2, dash='dash')))
+            fig_bench.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=300, template="plotly_white", xaxis_title="日期", yaxis_title="累積報酬率 (%)")
+            st.plotly_chart(fig_bench, use_container_width=True)
+    else:
+        st.info("⚠️ 收盤資料夾中未偵測到 '元大台灣50' 的資料，暫時無法繪製大盤對標線。")
+
     st.divider()
 
     # 投資組合明細清單
@@ -452,20 +501,16 @@ if inventory_df is not None and close_df is not None:
             roi_stock = (pnl / (avg_cost * shares) * 100) if avg_cost > 0 else 0
             daily_pnl_stock = stock_daily_pnl_map.get(name, 0)
             
-            # =========================================================================
-            # 🎯 [新增長線基本面雷達核心邏輯]
-            # =========================================================================
-            status_html = '<span class="status-hold">HOLD 持有</span>'
+            # 基本面雷達判定邏輯
+            status_html = '<span class="status-hold">💎 HODL 持有</span>'
             cfg = monitor_configs.get(name)
             if cfg:
                 target_price = cfg.get('固定買進目標價', 0)
                 req_yield = cfg.get('要求殖利率(%)', 0)
                 est_per_div = cfg.get('預估每股配息', 0)
                 
-                # 計算即時推導殖利率
                 current_yield = (est_per_div / price * 100) if price > 0 else 0
-                
-                if price <= target_price or (req_yield > 0 and current_yield >= req_yield):
+                if (target_price > 0 and price <= target_price) or (req_yield > 0 and current_yield >= req_yield):
                     status_html = '<span class="status-buy">🎯 達買進點</span>'
                 elif req_yield > 0 and current_yield < (req_yield * 0.6):
                     status_html = '<span class="status-overheat">⚠️ 估值過熱</span>'
@@ -488,7 +533,7 @@ if inventory_df is not None and close_df is not None:
             <thead>
                 <tr>
                     <th>股票名稱</th>
-                    <th>基本面狀態</th>
+                    <th>基本面雷達</th>
                     <th>持有股數</th>
                     <th>平均成本</th>
                     <th>目前市價</th>

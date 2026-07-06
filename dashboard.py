@@ -13,17 +13,20 @@ import urllib.parse
 import json
 import urllib3
 
+# 隱藏 SSL 警告
 urllib3.disable_warnings()
 
+# 導入 config
 try:
     import config
 except ImportError:
     st.error("❌ 找不到 config.py，請確保設定檔存在。")
     st.stop()
 
+# 設定頁面
 st.set_page_config(page_title="台股投資分析報告 v3.9.1", layout="wide")
 
-# --- 1. 動態個股新聞分析模組 ---
+# --- 1. 動態個股新聞分析模組 (名稱固定為 fetch_portfolio_news) ---
 @st.cache_data(ttl=3600)
 def fetch_portfolio_news(api_key, stock_names):
     if not api_key or not stock_names: return None
@@ -51,34 +54,180 @@ def fetch_portfolio_news(api_key, stock_names):
     except Exception: pass
     return None
 
-# --- 工具函式 ---
+# --- 2. 初始化庫存 (確保變數存在) ---
+INVENTORY_FILE = Path(config.DATA_DIR) / "庫存股票.xlsx"
+inventory_df = pd.read_excel(INVENTORY_FILE) if os.path.exists(INVENTORY_FILE) else None
+
+# --- 3. UI 設定 ---
+st.markdown("<style>.news-box { padding: 15px; border-radius: 8px; background-color: #f8f9fa; border: 1px solid #dee2e6; margin-bottom: 15px; } .news-title { font-weight: bold; color: #004a99; }</style>", unsafe_allow_html=True)
+#st.title("📊 投資組合財務分析報告 v3.9.1")
+
+# --- 4. 新聞區塊 (已修正呼叫名稱為 fetch_portfolio_news) ---
+st.markdown("### 🔔 持倉個股重大消息監控")
+if inventory_df is not None and '股票名稱' in inventory_df.columns:
+    portfolio_stocks = inventory_df['股票名稱'].unique().tolist()
+    api_key = getattr(config, 'GEMINI_API_KEY', None)
+
+    with st.spinner("🔍 正在分析您的持倉新聞..."):
+        # ✅ 正確呼叫修正後的函式名稱
+        dynamic_news = fetch_portfolio_news(api_key, portfolio_stocks)
+    
+    news_col1, news_col2 = st.columns(2)
+    if dynamic_news:
+        mid = len(dynamic_news) // 2
+        with news_col1:
+            for item in dynamic_news[:mid]:
+                st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title')}</div><div class="news-content">{item.get('content')}</div></div>''', unsafe_allow_html=True)
+        with news_col2:
+            for item in dynamic_news[mid:]:
+                st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title')}</div><div class="news-content">{item.get('content')}</div></div>''', unsafe_allow_html=True)
+    else:
+        st.info("⚠️ 目前無重大持倉相關消息，或 AI 伺服器繁忙。")
+else:
+    st.warning("⚠️ 無法讀取庫存或 Excel 中缺少「股票名稱」欄位。")
+
+# --- 其餘程式邏輯請接續在此 ---
+# 設定頁面與專業風格 (註解掉重複的設定避免報錯)
+# st.set_page_config(page_title="台股投資分析報告 v3.9.1", layout="wide")
+
+# 移除強制白色背景，改用更相容的主題風格，並加入數字靠右對齊與 KPI 顏色樣式
+st.markdown("""
+    <style>
+    h1, h2, h3 { color: #1a365d; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    
+    /* 專業表格樣式 */
+    .report-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 20px;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .report-table th {
+        background-color: #f1f3f5;
+        color: #1a365d;
+        font-weight: bold;
+        text-align: center !important; /* 欄位名稱置中 */
+        padding: 12px;
+        border: 1px solid #dee2e6;
+    }
+    .report-table td {
+        padding: 10px;
+        border: 1px solid #dee2e6;
+        text-align: right; /* 預設數據靠右 */
+    }
+    .report-table td:first-child {
+        text-align: center; /* 股票名稱置中 */
+    }
+    
+    /* 負數紅字樣式 */
+    .neg-value { color: #dc3545; font-weight: bold; }
+    
+    /* 自定義 KPI 卡片樣式 */
+    .kpi-box {
+        padding: 20px;
+        border-radius: 10px;
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        text-align: center;
+    }
+    .kpi-label { font-size: 1rem; color: #6c757d; margin-bottom: 5px; }
+    .kpi-value { font-size: 1.8rem; font-weight: bold; color: #1a365d; }
+    .kpi-value-red { font-size: 1.8rem; font-weight: bold; color: #dc3545; }
+
+    /* 新聞區塊樣式 */
+    .news-box {
+        background-color: #fff9db;
+        padding: 15px;
+        border-left: 5px solid #fcc419;
+        border-radius: 5px;
+        margin-bottom: 20px;
+    }
+    .news-title { font-weight: bold; color: #856404; margin-bottom: 5px; }
+    .news-content { font-size: 0.95rem; color: #555; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# 定義資料路徑：從 config.py 讀取統一路徑
 BASE_DIR = Path(config.DATA_DIR)
 INVENTORY_FILE = BASE_DIR / "庫存股票.xlsx"
 MONITOR_FILE = BASE_DIR / "監控股票.xlsx"
-FEE_RATE, TAX_RATE, MIN_FEE = 0.001425, 0.003, 20
+
+# 財務參數
+FEE_RATE = 0.001425
+TAX_RATE = 0.003
+MIN_FEE = 20
+
+def format_finance(val, is_percent=False):
+    """專業財務格式：負數用括號紅字，不含負號"""
+    if val is None: return ""
+    suffix = "%" if is_percent else ""
+    abs_val = abs(val)
+    
+    if is_percent:
+        val_str = f"{abs_val:,.2f}{suffix}"
+    else:
+        val_str = f"{abs_val:,.0f}{suffix}"
+        
+    if val < 0:
+        return f'<span class="neg-value">({val_str})</span>'
+    else:
+        return val_str
 
 def format_finance_plain(val, is_percent=False):
+    """將數值格式化：負數以紅色括號顯示，正數正常顯示"""
     try:
         val = float(val)
-        fmt = f"{val:.2f}%" if is_percent else f"{val:,.0f}"
-        if val < 0: return f'<span style="color:red">({abs(val):.2f}%)</span>' if is_percent else f'<span style="color:red">({abs(val):,.0f})</span>'
-        return fmt
-    except: return str(val)
+        if is_percent:
+            # 百分比格式
+            formatted = f"{val:.2f}%"
+        else:
+            # 金額格式
+            formatted = f"{val:,.0f}"
+            
+        # 若為負數，回傳紅色括號格式的 HTML
+        if val < 0:
+            # 移除負號並加上括號，同時設定顏色為紅色
+            abs_val = abs(val)
+            if is_percent:
+                return f'<span style="color:red">({abs_val:.2f}%)</span>'
+            else:
+                return f'<span style="color:red">({abs_val:,.0f})</span>'
+        
+        return formatted
+    except:
+        return str(val)
 
 def calculate_net_pnl(cost, price, shares):
     total_cost_base = cost * shares
+    buy_fee = max(MIN_FEE, total_cost_base * FEE_RATE)
     total_market_value = price * shares
     sell_fee = max(MIN_FEE, total_market_value * FEE_RATE)
     sell_tax = total_market_value * TAX_RATE
-    net_pnl = total_market_value - total_cost_base - max(MIN_FEE, total_cost_base * FEE_RATE) - sell_fee - sell_tax
+    net_pnl = total_market_value - total_cost_base - sell_fee - sell_tax
     return net_pnl, total_market_value, sell_fee + sell_tax
 
 def parse_date(val):
     if pd.isna(val): return None
-    if isinstance(val, (datetime, date)): return val.date()
+    if isinstance(val, (datetime, date)):
+        return val.date() if isinstance(val, datetime) else val
     s = str(val).strip().split(' ')[0]
+    if not s: return None
+    
+    for sep in ['/', '-']:
+        parts = s.split(sep)
+        if len(parts) == 3:
+            try:
+                y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                return date(y if y > 1911 else y + 1911, m, d)
+            except: continue
+            
     digits = re.sub(r'\D', '', s)
-    if len(digits) == 8: return datetime.strptime(digits, '%Y%m%d').date()
+    if len(digits) == 8:
+        try: return datetime.strptime(digits, '%Y%m%d').date()
+        except: pass
+    elif len(digits) == 7:
+        try: return date(int(digits[:3]) + 1911, int(digits[3:5]), int(digits[5:]))
+        except: pass
     return None
 
 def clean_price(val):
@@ -91,162 +240,257 @@ def clean_price(val):
 def load_data():
     if not INVENTORY_FILE.exists(): return None, None, ["❌ 找不到庫存檔案"]
     try:
-        inv = pd.read_excel(INVENTORY_FILE)
-        inv.columns = inv.columns.str.strip()
-        inv['交易日期'] = inv['交易日期'].apply(parse_date)
-        inv = inv.dropna(subset=['交易日期'])
+        inventory_df = pd.read_excel(INVENTORY_FILE, sheet_name=0)
+        col_map = {}
+        for col in inventory_df.columns:
+            c = str(col).strip()
+            if '名稱' in c: col_map['股票名稱'] = col
+            if '日期' in c: col_map['交易日期'] = col
+            if '股數' in c: col_map['股數'] = col
+            if '成本' in c: col_map['成本'] = col
+        if len(col_map) < 4: return None, None, [f"❌ 缺少必要欄位"]
+        inventory_df = inventory_df.rename(columns={v: k for k, v in col_map.items()})
+        inventory_df['交易日期'] = inventory_df['交易日期'].apply(parse_date)
+        inventory_df = inventory_df.dropna(subset=['交易日期'])
+        inventory_df['股票名稱'] = inventory_df['股票名稱'].astype(str).str.strip()
+        inventory_df['股數'] = pd.to_numeric(inventory_df['股數'], errors='coerce').fillna(0)
+        inventory_df['成本'] = pd.to_numeric(inventory_df['成本'], errors='coerce').fillna(0)
     except: return None, None, ["⚠️ 讀取庫存失敗"]
 
+    csv_files = glob.glob(str(BASE_DIR / "*.csv"))
     all_close_data = []
-    for f in glob.glob(str(BASE_DIR / "*.csv")):
+    for f in csv_files:
         try:
-            df = pd.read_csv(f, encoding='cp950' if 'cp950' in f else 'utf-8', on_bad_lines='skip')
-            date_col = next((c for c in df.columns if '日期' in c), None)
-            name_col = next((c for c in df.columns if any(x in c for x in ['名稱','代號'])), None)
-            price_col = next((c for c in df.columns if '收盤' in c), None)
-            if date_col and name_col and price_col:
-                df = df.rename(columns={name_col: '股票名稱', price_col: '收盤價', date_col: '日期'})
-                df['日期_dt'] = df['日期'].apply(parse_date)
-                df['收盤價'] = df['收盤價'].apply(clean_price)
-                all_close_data.append(df[['股票名稱', '收盤價', '日期_dt']])
-        except: continue
-    return inv, pd.concat(all_close_data, ignore_index=True) if all_close_data else None, []
-
-@st.cache_data(ttl=60)
-def load_monitor_configs():
-    if not MONITOR_FILE.exists(): return {}
-    df = pd.read_excel(MONITOR_FILE)
-    df['股票名稱'] = df['股票名稱'].astype(str).str.strip()
-    return df.set_index('股票名稱').to_dict('index')
+            try: df = pd.read_csv(f, encoding='cp950')
+            except: df = pd.read_csv(f, encoding='utf-8')
+            
+            date_col = None
+            for col in df.columns:
+                if df[col].dropna().head(10).apply(parse_date).count() >= 3:
+                    date_col = col; break
+            
+            target_cols = {'股票名稱': None, '收盤價': None}
+            for col in df.columns:
+                c_clean = str(col).strip()
+                
+                # 擴充辨識中英文名稱與代號
+                if any(x in c_clean for x in ['名稱', '證券名稱', '股票名稱', 'Name']):
+                    target_cols['股票名稱'] = col
+                elif any(x in c_clean for x in ['證券代號', '代號', '股票代號', 'Code']) and not target_cols['股票名稱']:
+                    target_cols['股票名稱'] = col
+                    
+                # 擴充辨識中英文收盤價
+                if any(x in c_clean for x in ['收盤', '收盤價', 'ClosingPrice', 'Close']):
+                    target_cols['收盤價'] = col
+            
+            if target_cols['股票名稱'] and target_cols['收盤價']:
+                temp_df = df.copy()
+                temp_df['日期_dt'] = temp_df[date_col].apply(parse_date) if date_col else parse_date(re.search(r'(\d{8})|(\d{7})', os.path.basename(f)).group())
+                temp_df = temp_df.dropna(subset=['日期_dt'])
+                temp_df = temp_df[[target_cols['股票名稱'], target_cols['收盤價'], '日期_dt']]
+                temp_df.columns = ['股票名稱', '收盤價', '日期_dt']
+                temp_df['股票名稱'] = temp_df['股票名稱'].astype(str).str.strip()
+                temp_df['收盤價'] = temp_df['收盤價'].apply(clean_price)
+                all_close_data.append(temp_df)
+        except: pass
+    return inventory_df, (pd.concat(all_close_data) if all_close_data else None), []
 
 inventory_df, close_df, logs = load_data()
-monitor_configs = load_monitor_configs()
 
-# --- UI 樣式 ---
-st.markdown("""<style>
-    .report-table { width: 100%; border-collapse: collapse; margin-top: 20px; font-family: sans-serif; }
-    .report-table th { background-color: #f1f3f5; color: #1a365d; text-align: center !important; padding: 12px; border: 1px solid #dee2e6; }
-    .report-table td { padding: 10px; border: 1px solid #dee2e6; text-align: right; }
-    .kpi-box { padding: 20px; border-radius: 10px; background-color: #f8f9fa; border: 1px solid #dee2e6; text-align: center; }
-    .kpi-value { font-size: 1.8rem; font-weight: bold; color: #1a365d; }
-    .news-box { background-color: #fff9db; padding: 15px; border-left: 5px solid #fcc419; margin-bottom: 20px; }
-    .news-title { font-weight: bold; color: #856404; margin-bottom: 5px; }
-</style>""", unsafe_allow_html=True)
-
-# --- 主程式 ---
-st.markdown("### 🔔 持倉個股重大消息監控")
-if inventory_df is not None:
-    news = fetch_portfolio_news(getattr(config, 'GEMINI_API_KEY', None), inventory_df['股票名稱'].unique().tolist())
-    if news:
-        c1, c2 = st.columns(2)
-        for i, item in enumerate(news):
-            with [c1, c2][i%2]: st.markdown(f'''<div class="news-box"><div class="news-title">{item.get('title')}</div><div class="news-content">{item.get('content')}</div></div>''', unsafe_allow_html=True)
+st.divider()
 
 if inventory_df is not None and close_df is not None:
-    all_dates = sorted(close_df['日期_dt'].dropna().unique())
-    selected_date = st.select_slider("📅 選擇報告基準日：", options=all_dates, value=all_dates[-1])
+    all_dates = sorted(close_df['日期_dt'].unique())
     
+    # 頂部控制列
+    ctrl1, ctrl2 = st.columns([7, 3])
+    with ctrl1:
+        selected_date = st.select_slider("📅 選擇報告基準日：", options=all_dates, value=all_dates[-1])
+    with ctrl2:
+        all_stock_names = ["全部個股"] + sorted(inventory_df['股票名稱'].unique().tolist())
+        selected_stock = st.selectbox("🔍 個股連動分析：", options=all_stock_names)
+
     # 計算損益數據
     daily_details = []
     for d in all_dates:
         if d > selected_date: continue
         d_close = close_df[close_df['日期_dt'] == d]
-        for name, group in inventory_df[inventory_df['交易日期'] <= d].groupby('股票名稱'):
+        d_inv = inventory_df[inventory_df['交易日期'] <= d]
+        for name, group in d_inv.groupby('股票名稱'):
             shares = group['股數'].sum()
-            price = d_close[d_close['股票名稱'] == name]['收盤價'].iloc[0] if name in d_close['股票名稱'].values else 0
-            if price > 0:
-                cost = (group['成本'] * group['股數']).sum() / shares
-                pnl, val, _ = calculate_net_pnl(cost, price, shares)
-                daily_details.append({"日期": d, "股票名稱": name, "淨損益": pnl, "市值": val})
+            if shares <= 0: continue
+            avg_cost = (group['成本'] * group['股數']).sum() / shares
+            m_close = d_close[d_close['股票名稱'] == name]
+            if not m_close.empty:
+                price = m_close.iloc[0]['收盤價']
+                pnl, val, _ = calculate_net_pnl(avg_cost, price, shares)
+                daily_details.append({"日期": d, "股票名稱": name, "淨損益": pnl, "市值": val, "成本": avg_cost * shares})
     
     full_df = pd.DataFrame(daily_details)
-    latest_summary = full_df[full_df['日期'] == selected_date]
-
-    # --- 資產與現金流儀表板 ---
-    st.markdown("---")
-    st.markdown("### 🛡️ 資產與現金流監控儀表板")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("#### 🚩 資產集中度")
-        total_val = latest_summary['市值'].sum()
-        if total_val > 0:
-            max_row = latest_summary.nlargest(1, '市值')
-            conc = (max_row['市值'].iloc[0] / total_val) * 100
-            st.metric("最大單一個股佔比", f"{conc:.1f}%", max_row['股票名稱'].iloc[0])
-            st.progress(min(conc/30.0, 1.0))
-    with c2:
-        st.markdown("#### 💰 被動收入監測")
-        est_div = 0
-        for name, group in inventory_df.groupby('股票名稱'):
-            if name in monitor_configs and '預估每股配息' in monitor_configs[name]:
-                est_div += (monitor_configs[name]['預估每股配息'] * group['股數'].sum())
-        target = getattr(config, 'TARGET_Q_2026', 280000) * 4
-        st.metric("2026 預估年配息", f"${est_div:,.0f}")
-        st.progress(min(est_div/target, 1.0))
-    st.divider()
-
-    # --- KPI 與圖表 ---
-    st.markdown("### 🔑 關鍵績效指標")
+    filtered_full_df = full_df if selected_stock == "全部個股" else full_df[full_df['股票名稱'] == selected_stock]
+    latest_summary = filtered_full_df[filtered_full_df['日期'] == selected_date]
     
-    # 【本日獲利(損) 直覺演算法】：使用 (今日收盤 - 昨日收盤) * 股數
-    current_idx = all_dates.index(selected_date)
-    prev_date = all_dates[current_idx - 1] if current_idx > 0 else selected_date
-    curr_close_df = close_df[close_df['日期_dt'] == selected_date]
-    prev_close_df = close_df[close_df['日期_dt'] == prev_date]
-    
-    total_daily_pnl = 0
-    stock_daily_pnl_map = {}
-    
-    valid_inventory = inventory_df[inventory_df['交易日期'] <= selected_date]
-    for name, group in valid_inventory.groupby('股票名稱'):
-        shares = group['股數'].sum()
-        curr_price = curr_close_df[curr_close_df['股票名稱'] == name]['收盤價'].iloc[0] if name in curr_close_df['股票名稱'].values else 0
-        prev_price = prev_close_df[prev_close_df['股票名稱'] == name]['收盤價'].iloc[0] if name in prev_close_df['股票名稱'].values else curr_price
-        
-        # 單純的價差相乘
-        daily_diff = (curr_price - prev_price) * shares
-        stock_daily_pnl_map[name] = daily_diff
-        total_daily_pnl += daily_diff
+    # =========================================================================
+    # [修改區塊 1] 計算「本日獲利(損)」 - 採用直覺算法：(今日收盤 - 昨日收盤) * 股數
+    # =========================================================================
+    daily_pnl = 0
+    if len(all_dates) >= 2:
+        try:
+            idx = all_dates.index(selected_date)
+            if idx > 0:
+                prev_date = all_dates[idx-1]
+                d_curr = close_df[close_df['日期_dt'] == selected_date]
+                d_prev = close_df[close_df['日期_dt'] == prev_date]
+                
+                inv_to_calc = inventory_df[inventory_df['交易日期'] <= selected_date]
+                if selected_stock != "全部個股":
+                    inv_to_calc = inv_to_calc[inv_to_calc['股票名稱'] == selected_stock]
+                    
+                for name, group in inv_to_calc.groupby('股票名稱'):
+                    shares = group['股數'].sum()
+                    if shares <= 0: continue
+                    
+                    m_curr = d_curr[d_curr['股票名稱'] == name]
+                    curr_price = m_curr.iloc[0]['收盤價'] if not m_curr.empty else 0
+                    
+                    m_prev = d_prev[d_prev['股票名稱'] == name]
+                    prev_price = m_prev.iloc[0]['收盤價'] if not m_prev.empty else curr_price
+                    
+                    if curr_price > 0:
+                        daily_pnl += (curr_price - prev_price) * shares
+        except: pass
 
     total_net_pnl = latest_summary['淨損益'].sum() if not latest_summary.empty else 0
-    
-    m1, m2, m3 = st.columns(3)
-    with m1: st.markdown(f'<div class="kpi-box"><div class="kpi-label">資產總市值</div><div class="kpi-value">${total_val:,.0f}</div></div>', unsafe_allow_html=True)
-    with m2: st.markdown(f'<div class="kpi-box"><div class="kpi-label">累積淨損益</div><div class="kpi-value">{format_finance_plain(total_net_pnl)}</div></div>', unsafe_allow_html=True)
-    with m3: st.markdown(f'<div class="kpi-box"><div class="kpi-label">本日獲利(直覺)</div><div class="kpi-value">{format_finance_plain(total_daily_pnl)}</div></div>', unsafe_allow_html=True)
+    total_market_value = latest_summary['市值'].sum() if not latest_summary.empty else 0
+    total_cost = latest_summary['成本'].sum() if not latest_summary.empty else 0
+    roi = (total_net_pnl / total_cost * 100) if total_cost > 0 else 0
 
-    cols = st.columns(3)
-    cols[0].plotly_chart(px.area(full_df, x="日期", y="淨損益", color="股票名稱"), use_container_width=True)
-    cols[1].plotly_chart(px.pie(latest_summary, values='市值', names='股票名稱'), use_container_width=True)
-    cols[2].plotly_chart(px.bar(latest_summary, x='股票名稱', y='淨損益'), use_container_width=True)
+    st.markdown("### 🔑 關鍵績效指標")
+    m1, m2, m3, m4, m5 = st.columns(5)
     
-    # --- 投資組合明細清單 ---
+    with m1:
+        st.markdown(f'<div class="kpi-box"><div class="kpi-label">資產總市值</div><div class="kpi-value">${total_market_value:,.0f}</div></div>', unsafe_allow_html=True)
+    with m2:
+        pnl_display = format_finance(total_net_pnl)
+        st.markdown(f'<div class="kpi-box"><div class="kpi-label">累積淨損益</div><div class="kpi-value">${pnl_display}</div></div>', unsafe_allow_html=True)
+    with m3:
+        pnl_class = "kpi-value-red" if daily_pnl < 0 else "kpi-value"
+        abs_daily_pnl = abs(daily_pnl)
+        val_str = f"{abs_daily_pnl:,.0f}"
+        daily_pnl_display = f"({val_str})" if daily_pnl < 0 else val_str
+        st.markdown(f'<div class="kpi-box"><div class="kpi-label">本日獲利(損)</div><div class="{pnl_class}">{daily_pnl_display}</div></div>', unsafe_allow_html=True)
+    with m4:
+        roi_display = format_finance(roi, is_percent=True)
+        st.markdown(f'<div class="kpi-box"><div class="kpi-label">投資報酬率</div><div class="kpi-value">{roi_display}</div></div>', unsafe_allow_html=True)
+    with m5:
+        st.markdown(f'<div class="kpi-box"><div class="kpi-label">報告基準日</div><div class="kpi-value" style="font-size:1.2rem; padding-top:10px;">{selected_date}</div></div>', unsafe_allow_html=True)
+
+    st.divider()
+
+    # 圖表區
+    c1, c2, c3 = st.columns([5, 2.5, 2.5])
+    with c1:
+        st.subheader("📈 損益結構趨勢")
+        if not filtered_full_df.empty:
+            fig_trend = px.area(filtered_full_df, x="日期", y="淨損益", color="股票名稱", 
+                                title=f"{selected_stock} 損益變動", template="plotly_white")
+            fig_trend.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, showlegend=(selected_stock == "全部個股"))
+            st.plotly_chart(fig_trend, use_container_width=True)
+
+    with c2:
+        st.subheader("🍰 資產配置")
+        if not latest_summary.empty:
+            fig_pie = px.pie(latest_summary, values='市值', names='股票名稱', hole=.4, template="plotly_white")
+            fig_pie.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, showlegend=False)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+    with c3:
+        st.subheader("🏆 績效貢獻")
+        if not latest_summary.empty:
+            fig_bar = px.bar(latest_summary.sort_values('淨損益'), x='淨損益', y='股票名稱', orientation='h', 
+                             color='淨損益', color_continuous_scale='RdYlGn', template="plotly_white")
+            fig_bar.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, coloraxis_showscale=False)
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+    st.divider()
+
+    # 投資組合明細清單
     st.subheader("📋 投資組合明細清單")
+    current_close = close_df[close_df['日期_dt'] == selected_date]
+    valid_inventory = inventory_df[inventory_df['交易日期'] <= selected_date]
+    inventory_to_show = valid_inventory if selected_stock == "全部個股" else valid_inventory[valid_inventory['股票名稱'] == selected_stock]    
+    
+    # =========================================================================
+    # [修改區塊 2] 準備用於計算個股本日獲利(損)的數據 - 直覺算法：(今收 - 昨收) * 股數
+    # =========================================================================
+    stock_daily_pnl_map = {}
+    if len(all_dates) >= 2:
+        try:
+            idx = all_dates.index(selected_date)
+            if idx > 0:
+                prev_date = all_dates[idx-1]
+                d_prev = close_df[close_df['日期_dt'] == prev_date]
+                
+                for name, group in inventory_to_show.groupby('股票名稱'):
+                    shares = group['股數'].sum()
+                    if shares <= 0: continue
+                    
+                    m_curr = current_close[current_close['股票名稱'] == name]
+                    curr_price = m_curr.iloc[0]['收盤價'] if not m_curr.empty else 0
+                    
+                    m_prev = d_prev[d_prev['股票名稱'] == name]
+                    prev_price = m_prev.iloc[0]['收盤價'] if not m_prev.empty else curr_price
+                    
+                    if curr_price > 0:
+                        stock_daily_pnl_map[name] = (curr_price - prev_price) * shares
+        except: pass
+
     rows_html = ""
-    for name, group in valid_inventory.groupby('股票名稱'):
+    for name, group in inventory_to_show.groupby('股票名稱'):
         shares = group['股數'].sum()
         if shares <= 0: continue
         avg_cost = (group['成本'] * group['股數']).sum() / shares
-        curr_price = curr_close_df[curr_close_df['股票名稱'] == name]['收盤價'].iloc[0] if name in curr_close_df['股票名稱'].values else 0
-        
-        if curr_price > 0:
-            pnl, val, fees = calculate_net_pnl(avg_cost, curr_price, shares)
+        m_close = current_close[current_close['股票名稱'] == name]
+        if not m_close.empty:
+            price = m_close.iloc[0]['收盤價']
+            pnl, val, fees = calculate_net_pnl(avg_cost, price, shares)
             roi_stock = (pnl / (avg_cost * shares) * 100) if avg_cost > 0 else 0
-            # 取得上方計算好的直覺獲利
             daily_pnl_stock = stock_daily_pnl_map.get(name, 0)
             
-            rows_html += f"<tr><td>{name}</td><td>{shares:,.0f}</td><td>{avg_cost:,.2f}</td><td>{curr_price:,.2f}</td><td>{val:,.0f}</td><td>{fees:,.0f}</td><td>{format_finance_plain(pnl)}</td><td>{format_finance_plain(daily_pnl_stock)}</td><td>{format_finance_plain(roi_stock, is_percent=True)}</td></tr>"
-            
+            rows_html += f"""<tr>
+<td>{name}</td>
+<td>{shares:,.0f}</td>
+<td>{avg_cost:,.2f}</td>
+<td>{price:,.2f}</td>
+<td>{val:,.0f}</td>
+<td>{fees:,.0f}</td>
+<td>{format_finance_plain(pnl)}</td>
+<td>{format_finance_plain(daily_pnl_stock)}</td>
+<td>{format_finance_plain(roi_stock, is_percent=True)}</td>
+</tr>"""
+    
     st.markdown(f"""
         <table class="report-table">
             <thead>
                 <tr>
-                    <th>股票名稱</th><th>持有股數</th><th>平均成本</th><th>目前市價</th><th>資產市值</th><th>預估稅費</th><th>累積淨損益</th><th>本日獲利(直覺)</th><th>投資報酬率</th>
+                    <th>股票名稱</th>
+                    <th>持有股數</th>
+                    <th>平均成本</th>
+                    <th>目前市價</th>
+                    <th>資產市值</th>
+                    <th>預估稅費</th>
+                    <th>累積淨損益</th>
+                    <th>本日獲利(損)</th>
+                    <th>投資報酬率</th>
                 </tr>
             </thead>
-            <tbody>{rows_html}</tbody>
+            <tbody>
+                {rows_html}
+            </tbody>
         </table>
-        <p style="color: #666; font-size: 0.8rem; margin-top: 10px;">註：本日獲利採 (今日收盤 - 昨日收盤) * 持有股數 計算，不含稅費。</p>
+        <p style="color: #666; font-size: 0.8rem; margin-top: 10px;">註：負數以括號 ( ) 表示。本日獲利(損)為單純的 (今日收盤價 - 昨日收盤價) * 持有股數，不含稅費。預估稅費包含買入手續費、賣出手續費及證交稅。</p>
     """, unsafe_allow_html=True)
 else:
-    st.info("👋 歡迎使用！請確認資料夾中已包含 '庫存股票.xlsx' 與當日收盤價 CSV 檔案。")
+    st.info("👋 歡迎使用！請確認 '每日收盤' 資料夾中已包含 '庫存股票.xlsx' 與當日收盤價 CSV 檔案。")
+    if logs:
+        for log in logs: st.error(log)

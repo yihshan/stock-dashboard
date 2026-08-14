@@ -40,10 +40,10 @@ except Exception:
     #LINE_USER_ID = os.getenv("LINE_USER_ID", "")
 
 # 🛠️ 終極防禦：如果在 Actions 區塊讀取失敗，嘗試直接做全域強抓
-if not LINE_CHANNEL_ACCESS_TOKEN:
-    LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-if not LINE_USER_ID:
-    LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
+#if not LINE_CHANNEL_ACCESS_TOKEN:
+    #LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+#if not LINE_USER_ID:
+    #LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
     
 # 收件人清單
 RECIPIENTS = [

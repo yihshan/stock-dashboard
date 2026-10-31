@@ -44,3 +44,10 @@ jobs:
         git add data/
         git commit -m "Auto-update daily close prices [skip ci]" || echo "No changes to commit"
         git push origin main
+
+    - name: 記錄 GitHub 實際啟動時間
+      run: |
+        echo "UTC Time:"
+        date -u
+        echo "Taiwan Time:"
+        TZ=Asia/Taipei date    
